@@ -19,25 +19,49 @@ html, body {
 }
 #game-root canvas { display: block; }
 
-/* ---- HUD ---- */
+/* ---- HUD 도움말 (좌하단, 픽셀 카드 / 역할별 '클릭 버튼') ---- */
 #hud {
-  position: fixed;
-  left: 12px;
-  bottom: 12px;
-  background: rgba(15, 18, 26, 0.72);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 10px;
-  padding: 10px 14px;
-  font-size: 13px;
-  line-height: 1.7;
-  z-index: 20;
-  pointer-events: none;
+  left: 14px;
+  bottom: 14px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5px;
+  padding: 8px;
+  pointer-events: auto; /* 카드 전체가 클릭을 받아 술래 오발 방지 */
 }
-#hud b {
-  display: inline-block;
-  min-width: 46px;
-  color: #7cc4ff;
-  font-family: monospace;
+#hud .hud-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 2px solid #0a0c14;
+  border-radius: 0;
+  background: #2d3650;
+  color: #e7e9ee;
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  box-shadow:
+    inset 1px 1px 0 0 rgba(255, 255, 255, 0.12),
+    inset -1px -1px 0 0 rgba(0, 0, 0, 0.5);
+}
+#hud .hud-btn:hover { background: #36405e; }
+#hud .hud-btn:active {
+  box-shadow:
+    inset -1px -1px 0 0 rgba(255, 255, 255, 0.1),
+    inset 1px 1px 0 0 rgba(0, 0, 0, 0.55);
+}
+#hud .hud-lbl { color: #e7e9ee; }
+#hud .hud-key {
+  min-width: 20px;
+  text-align: center;
+  font-size: 10px;
+  color: #9fb4d8;
+  background: #11141d;
+  border: 1px solid #0a0c14;
+  padding: 1px 5px;
 }
 
 /* ============================================================

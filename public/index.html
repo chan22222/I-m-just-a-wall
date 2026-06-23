@@ -14,18 +14,8 @@
   <!-- Phaser 캔버스가 들어갈 컨테이너 -->
   <div id="game-root"></div>
 
-  <!-- 조작 안내 HUD -->
-  <div id="hud">
-    <div class="hud-row"><b>WASD</b> 이동</div>
-    <div class="hud-row"><b>E</b> 캔버스 꺼내기/넣기 (들면 멈춤·위장)</div>
-    <div class="hud-row"><b>Q</b> 캔버스에 그리기</div>
-    <div class="hud-row"><b>R</b> 휘파람</div>
-    <div class="hud-row"><b>Space</b> 점프</div>
-    <div class="hud-row"><b>좌클릭</b> 사격 (술래)</div>
-    <div class="hud-row"><b>T</b> 채팅</div>
-    <div class="hud-row"><b>B</b> 음성채팅 / <b>V</b> 마이크</div>
-    <div class="hud-row"><b>마우스</b> 술래 시야 방향</div>
-  </div>
+  <!-- 조작 안내 HUD (역할이 정해지면 JS가 해당 역할 조작만 채움) -->
+  <div id="hud" class="hud-card"></div>
 
   <!-- 역할 표시 (픽셀 HUD 카드) -->
   <div id="role-badge" class="hud-card">
