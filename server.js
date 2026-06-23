@@ -197,6 +197,12 @@ io.on('connection', (socket) => {
     io.to(to).emit('voiceSignal', { from: socket.id, desc, ice });
   });
 
+  // 발사 포즈 동기화: 술래가 쏘면 같은 방의 다른 사람에게 발사 포즈(gun_shot)를 알림
+  socket.on('shoot', () => {
+    if (!currentRoomId) return;
+    socket.to(currentRoomId).emit('playerShot', { id: socket.id });
+  });
+
   socket.on('disconnect', () => {
     if (!currentRoomId) return;
     const room = rooms.get(currentRoomId);

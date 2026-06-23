@@ -29,8 +29,10 @@ const GUN_RANGE = 780;    // 사거리(= 시야 거리)
 const HIT_RADIUS = 48;    // 명중 판정 반경(조준선에서 이 거리 안이면 맞음)
 const GUN_CD = 450;       // 명중/평소 쿨다운(ms)
 const GUN_CD_MISS = 1500; // 빗맞힘 쿨다운(ms)
-const SLOW_MS = 1000;     // 빗맞힘 후 둔화 지속(ms)
+const SLOW_MS = 100;      // 발사 후 둔화 지속(ms) — 아주 짧게
 const SLOW_FACTOR = 0.4;  // 둔화 시 속도 배율
+const SHOT_HEAR_R = 1500; // 총소리가 들리는 최대 거리(이 거리에서 가장 작게)
+const SHOT_KNOCKBACK = 800; // 발사 시 뒤로 밀리는 초기 속도(px/s)
 const ROLE_COLOR = { seeker: 0xff5a5a, hider: 0x5fe08a };
 const HIDER_SETS = ['gray', 'lemon', 'orange']; // 숨는이 색 세트(랜덤 배정)
 
@@ -54,7 +56,6 @@ const FEET_OFF = Math.round(CAT_DH * (32 - 27) / 32); // 실제 발바닥 ≈ 23
 const DEPTH_BG = -1000;
 const DEPTH_SHADOW = -5;
 const DEPTH_RING = -4;
-const DEPTH_SEEKER = 3000; // 술래(본인)는 항상 다른 캐릭터/그림보다 앞(안개 아래)
 const DEPTH_FOG = 5000;
 const DEPTH_EMOJI = 6000;
 const DEPTH_DRAW = 7000;
@@ -73,6 +74,10 @@ export class GameScene extends Phaser.Scene {
     this.load.spritesheet('seeker_jump', S + '3_Cat_Jump-Sheet.png', F);
     this.load.spritesheet('seeker_fall', S + '4_Cat_Fall-Sheet.png', F);
     this.load.spritesheet('seeker_canvas', S + '5_Cat_Canvas-Sheet.png', F);
+    // 술래 총 오버레이(32×32 단일 프레임): idle / 이동 / 발사 포즈
+    this.load.image('gun_idle', S + 'gun_idle.png');
+    this.load.image('gun_moving', S + 'gun_moving.png');
+    this.load.image('gun_shot', S + '7_Cat_gun_shot.png');
     // 숨는이: HIDER/<색> 3종(gray/lemon/orange), 구조 동일
     HIDER_SETS.forEach((c) => {
       const H = 'character/HIDER/' + c + '/';
@@ -128,6 +133,11 @@ export class GameScene extends Phaser.Scene {
       v: 'V', b: 'B',                 // V 마이크 ON/OFF · B 음성채팅 참여
       volDown: 'MINUS', volUp: 'PLUS', // − / = 음성 볼륨 조절
     }, false); // capture 끔 → 채팅 입력창에 글자가 정상 입력되도록
+
+    // 오디오는 사용자 제스처가 있어야 시작됨 → 첫 입력에 깨워 숨는이도 총소리/휘파람을 듣게
+    const unlockAudio = () => this._ensureAudio();
+    this.input.once('pointerdown', unlockAudio);
+    this.input.keyboard.once('keydown', unlockAudio);
 
     this._setupChat();
 
@@ -247,8 +257,10 @@ export class GameScene extends Phaser.Scene {
     const step = 64;
     for (let x = 0; x <= this.world.width; x += step) g.lineBetween(x, 0, x, this.world.height);
     for (let y = 0; y <= this.world.height; y += step) g.lineBetween(0, y, this.world.width, y);
+    // 테두리: 선 두께(6)의 절반만큼 안쪽으로 들여 그려야 왼쪽/위 변이 카메라 밖으로
+    // 잘리지 않고 온전히 보인다.
     g.lineStyle(6, 0x3a4356, 1);
-    g.strokeRect(0, 0, this.world.width, this.world.height);
+    g.strokeRect(3, 3, this.world.width - 6, this.world.height - 6);
   }
 
   _spawnProps() {
@@ -486,8 +498,9 @@ export class GameScene extends Phaser.Scene {
     const now = this.time.now;
     if (now < this._gunCdUntil) return;
 
+    const off = me.z || 0;                        // 점프 높이(스프라이트가 위로 솟은 만큼)
     const ox = me.x;
-    const oy = me.y - VIS_OFFY * me.scale; // 조준 원점
+    const oy = me.y - VIS_OFFY * me.scale - off;  // 조준 원점(점프 중엔 그만큼 위)
     const ptr = this.input.activePointer;
     const aimX = ptr.worldX, aimY = ptr.worldY;       // 목적지(커서)
     const aimDist = Math.hypot(aimX - ox, aimY - oy) || 1;
@@ -502,31 +515,43 @@ export class GameScene extends Phaser.Scene {
       if (d <= HIT_RADIUS && d < best) { hit = p; best = d; }
     });
 
-    // 탄선: 원점 → 목적지(사거리까지만)
+    // 사거리 내 목적지 좌표
     const len = Math.min(aimDist, GUN_RANGE);
     const ux = (aimX - ox) / aimDist, uy = (aimY - oy) / aimDist;
-    this._drawTracer(ox, oy, ox + ux * len, oy + uy * len);
-    this._muzzleFlash(ox, oy, Math.atan2(uy, ux)); // 발사 이펙트
+    // 총구 위치: 손 높이에서 조준 방향으로 앞쪽 + 바라보는 쪽으로 조금 더(x), 살짝 위로(y)
+    const fx = me.facingLeft ? -1 : 1;
+    const mx = ox + ux * (32 * me.scale) + fx * (10 * me.scale);
+    const my = (me.y - 60 * me.scale - off) + uy * (32 * me.scale); // 총구쪽(점프 높이 반영)
+    const destX = ox + ux * len, destY = oy + uy * len;
+    this._drawTracer(mx, my, destX, destY);           // 총구 → 목적지까지 이어지는 탄선
+    this._impactEffect(destX, destY);                 // 목적지 임팩트(커서)
+    this._muzzleFlash(mx, my, Math.atan2(uy, ux));    // 총구 플래시
     this._playShot();
+    me.gunShotUntil = now + 280;                 // 발사 중: gun_moving + gun_shot 동시 표시
+    if (me.gun) me.gun.setTexture('gun_moving'); // 베이스 즉시 이동 포즈
+    if (me.gunShot) me.gunShot.setVisible(true); // gun_shot 즉시(0ms) 동시 표시
+    me.facingLeft = aimX < ox;                   // 쏘는 방향(커서)을 바라보게 좌우 전환
+    me._kbx = -ux * SHOT_KNOCKBACK;              // 발사 반동: 뒤로 살짝 밀림
+    me._kby = -uy * SHOT_KNOCKBACK;
+    if (this.socket) this.socket.emit('shoot');  // 다른 클라이언트에도 발사 포즈 표시
 
+    this._slowUntil = now + SLOW_MS; // 발사 후 아주 짧은 둔화(매 발)
     if (hit) {
       if (this.socket) this.socket.emit('catch', { targetId: hit.id });
       this._gunCdUntil = now + GUN_CD;
     } else {
-      // 빗맞힘: 긴 쿨다운 + 잠깐 둔화
+      // 빗맞힘: 긴 쿨다운(둔화는 위에서 짧게 공통 적용)
       this._gunCdUntil = now + GUN_CD_MISS;
-      this._slowUntil = now + SLOW_MS;
     }
   }
 
+  // 총구에서 짧게만 뻗는 탄선(맵 전체를 가로지르지 않음)
+  // 총구 → 목적지(커서)까지 이어지는 탄선. pixelArt 라 얇은 대각선이 끊겨 보여 약간 두껍게.
   _drawTracer(x1, y1, x2, y2) {
-    // 지나가는 길: 흐릿하게(실제로 맞는 느낌 안 나게)
-    const line = this.add.graphics().setDepth(DEPTH_EMOJI);
-    line.lineStyle(3, 0xfff2a0, 0.22);
+    const line = this.add.graphics().setDepth(DEPTH_EMOJI + 1);
+    line.lineStyle(4, 0xfff2a0, 0.16); // 흐릿하게(0.16)
     line.lineBetween(x1, y1, x2, y2);
     this.tweens.add({ targets: line, alpha: 0, duration: 200, onComplete: () => line.destroy() });
-    // 목적지: ChronosOverload식 파티클 폭발(기존 원형 이펙트 대체)
-    this._impactEffect(x2, y2);
   }
 
   // 목표지점 임팩트(발사 시): 파티클 폭발
@@ -576,7 +601,7 @@ export class GameScene extends Phaser.Scene {
   // 발사 이펙트: 총구 플래시 + 방향 파티클 (ChronosOverload 스타일)
   _muzzleFlash(x, y, angle) {
     const tint = 0xffe066;
-    const flash = this.add.circle(x, y, 10, tint, 0.85).setDepth(DEPTH_EMOJI);
+    const flash = this.add.circle(x, y, 10, tint, 0.85).setDepth(DEPTH_EMOJI + 1);
     this.tweens.add({ targets: flash, alpha: 0, scale: 2.4, duration: 90, onComplete: () => flash.destroy() });
     const deg = Phaser.Math.RadToDeg(angle);
     const p = this.add.particles(x, y, 'fx-dot', {
@@ -589,7 +614,7 @@ export class GameScene extends Phaser.Scene {
     this.time.delayedCall(260, () => p.destroy());
   }
 
-  _playShot() {
+  _playShot(vol = 1) {
     this._ensureAudio();
     const ctx = this.audioCtx;
     const t = ctx.currentTime;
@@ -598,8 +623,9 @@ export class GameScene extends Phaser.Scene {
     o.type = 'square';
     o.frequency.setValueAtTime(680, t);
     o.frequency.exponentialRampToValueAtTime(120, t + 0.12);
+    const peak = Math.max(0.0008, 0.2 * vol); // 거리별 음량
     gg.gain.setValueAtTime(0.0001, t);
-    gg.gain.exponentialRampToValueAtTime(0.2, t + 0.01);
+    gg.gain.exponentialRampToValueAtTime(peak, t + 0.01);
     gg.gain.exponentialRampToValueAtTime(0.0001, t + 0.14);
     o.connect(gg); gg.connect(ctx.destination);
     o.start(t); o.stop(t + 0.16);
@@ -769,6 +795,18 @@ export class GameScene extends Phaser.Scene {
     socket.on('chatMessage', ({ id, name, text }) => this._addChatMessage(name, text, id === this.myId));
     socket.on('playerCaught', ({ id }) => this._onCaught(id));
     socket.on('gameOver', ({ winner }) => this._onGameOver(winner));
+    socket.on('playerShot', ({ id }) => {
+      const p = this.players.get(id);
+      if (!p) return;
+      const now = this.time.now;
+      p.gunShotUntil = now + 280;   // 발사 중: gun_moving + gun_shot 동시 표시
+      // 총소리: 술래뿐 아니라 근처 플레이어(숨는이)도 거리별 음량으로 들림
+      const me = this.players.get(this.myId);
+      if (me) {
+        const d = Phaser.Math.Distance.Between(me.x, me.y, p.x, p.y);
+        if (d <= SHOT_HEAR_R) this._playShot(Phaser.Math.Clamp(1 - d / SHOT_HEAR_R, 0.1, 1));
+      }
+    });
 
     socket.on('playerLeft', ({ id }) => {
       const p = this.players.get(id);
@@ -777,6 +815,8 @@ export class GameScene extends Phaser.Scene {
       p.skin.destroy();
       p.shadow.destroy();
       p.label.destroy();
+      if (p.gun) p.gun.destroy();
+      if (p.gunShot) p.gunShot.destroy();
       this.players.delete(id);
     });
   }
@@ -807,6 +847,21 @@ export class GameScene extends Phaser.Scene {
       .setDisplaySize(regionW * scale, regionH * scale)
       .setVisible(false);
 
+    // 술래 총 오버레이(몸 위에 한 겹 더). 숨는이는 없음.
+    //  - gun: 평상시 idle / 이동 시 gun_moving (베이스)
+    //  - gunShot: 발사 시 gun_shot 을 베이스 위에 '동시에' 겹쳐 표시
+    const gun = isSeekerP
+      ? this.add.image(info.x, info.y, 'gun_idle')
+          .setOrigin(0.5, 1)
+          .setDisplaySize(CAT_DH * scale, CAT_DH * scale)
+      : null;
+    const gunShot = isSeekerP
+      ? this.add.image(info.x, info.y, 'gun_shot')
+          .setOrigin(0.5, 1)
+          .setDisplaySize(CAT_DH * scale, CAT_DH * scale)
+          .setVisible(false)
+      : null;
+
     const isMe = info.id === this.myId;
     const label = this.add.text(0, 0, info.name, {
       fontFamily: 'monospace', fontSize: '16px',
@@ -818,7 +873,8 @@ export class GameScene extends Phaser.Scene {
     const p = {
       id: info.id, role: info.role, name: info.name,
       set, scale, regionW, regionH, regionCY,
-      shadow, body, skin, label,
+      shadow, body, skin, label, gun, gunShot,
+      gunShotUntil: 0,        // 발사 중(gun_moving + gun_shot 동시 표시) 종료 시각
       x: info.x, y: info.y,
       target: { x: info.x, y: info.y },
       angle: info.angle || 0,
@@ -841,17 +897,15 @@ export class GameScene extends Phaser.Scene {
   _updateRoleBadge() {
     const badge = document.getElementById('role-badge');
     if (!badge) return;
-    const icon = badge.querySelector('.rb-icon');
+    // 아이콘(SVG)은 className(seeker/hider)으로 CSS가 전환 → innerHTML 건드리지 않음
     const title = badge.querySelector('.rb-title');
     const sub = badge.querySelector('.rb-sub');
     if (this.myRole === 'seeker') {
       badge.className = 'hud-card seeker';
-      if (icon) icon.textContent = '🔍';
       if (title) title.textContent = 'SEEKER';
       if (sub) sub.textContent = '숨은 HIDER를 찾으세요';
     } else {
       badge.className = 'hud-card hider';
-      if (icon) icon.textContent = '🐱';
       if (title) title.textContent = 'HIDER';
       if (sub) sub.textContent = '위장하고 숨으세요';
     }
@@ -916,18 +970,17 @@ export class GameScene extends Phaser.Scene {
     const joined = !!(v && v.joined);
     const micOn = !!(v && v.micOn);
 
+    // mute 사선(.mic-slash)은 panel.muted 클래스로 CSS가 전환 → SVG innerHTML 안 건드림
     panel.className = 'hud-card ' + (joined ? (micOn ? 'on' : 'muted') : 'off');
 
     const mic = document.getElementById('vc-mic');
-    const micIco = mic && mic.querySelector('.vc-ico');
-    if (micIco) micIco.textContent = (joined && !micOn) ? '🔇' : '🎙️';
     if (mic) mic.title = joined ? (micOn ? '마이크 끄기 (V)' : '마이크 켜기 (V)') : '음성채팅 참여 후 사용 (B)';
 
     const power = document.getElementById('vc-power');
     if (power) power.title = joined ? '음성채팅 나가기 (B)' : '음성채팅 참여 (B)';
 
     const count = document.getElementById('vc-count');
-    if (count) count.textContent = String((v ? v.peers.size : 0) + 1);
+    if (count) count.textContent = '참가자 ' + ((v ? v.peers.size : 0) + 1);
 
     // 슬라이더를 현재 볼륨에 동기화(드래그 중이 아닐 때만 — 키로 바꿨을 때 반영)
     const vol = document.getElementById('vc-volume');
@@ -1108,10 +1161,22 @@ export class GameScene extends Phaser.Scene {
 
       if (moving) {
         const len = Math.hypot(vx, vy);
+        // 캐릭터는 발(아래)이 기준이고 스프라이트가 위로 솟으므로, 머리가 맵 위 경계를
+        // 넘지 않도록 상단 클램프를 스프라이트 높이만큼 내려준다.
+        const topLimit = CAT_DH * me.scale * 0.85;
         me.x = Phaser.Math.Clamp(me.x + (vx / len) * speed * dt, 30, this.world.width - 30);
-        me.y = Phaser.Math.Clamp(me.y + (vy / len) * speed * dt, 40, this.world.height - 10);
+        me.y = Phaser.Math.Clamp(me.y + (vy / len) * speed * dt, topLimit, this.world.height - 10);
         if (vx < 0) me.facingLeft = true;
         else if (vx > 0) me.facingLeft = false;
+      }
+
+      // 발사 반동(넉백): 쏠 때 _shoot 가 me._kbx/_kby 를 설정 → 뒤로 살짝 밀리며 감쇠
+      if (me._kbx || me._kby) {
+        const topLimit = CAT_DH * me.scale * 0.85;
+        me.x = Phaser.Math.Clamp(me.x + me._kbx * dt, 30, this.world.width - 30);
+        me.y = Phaser.Math.Clamp(me.y + me._kby * dt, topLimit, this.world.height - 10);
+        me._kbx *= 0.8; me._kby *= 0.8;
+        if (Math.abs(me._kbx) < 6 && Math.abs(me._kby) < 6) { me._kbx = 0; me._kby = 0; }
       }
 
       // 점프/이동 애니는 평소(closed)에만 — 캔버스 들고는 점프 불가 + 캔버스 포즈 유지
@@ -1130,6 +1195,10 @@ export class GameScene extends Phaser.Scene {
 
       const ptr = this.input.activePointer;
       this.facingAngle = Phaser.Math.Angle.Between(me.x, me.y - VIS_OFFY * me.scale, ptr.worldX, ptr.worldY);
+      // 발사 중엔 쏘는(커서) 방향을 바라보게 좌우 전환(이동 입력보다 우선)
+      if (this.myRole === 'seeker' && time < (me.gunShotUntil || 0)) {
+        me.facingLeft = Math.cos(this.facingAngle) < 0;
+      }
     }
 
     // [2단계] 키 입력 (잡혀서 관전 중이면 게임 조작 잠금)
@@ -1209,9 +1278,15 @@ export class GameScene extends Phaser.Scene {
     }
 
     // ★ 2.5D 렌더
+    // 술래의 정렬 깊이(=술래 y). 위장(그림 표시)한 숨는이만 이 아래로 눌러 술래가 항상 위.
+    let seekerY = null;
+    this.players.forEach((pp) => { if (pp.role === 'seeker' && !pp.caught) seekerY = pp.y; });
+
     this.players.forEach((p, id) => {
       if (p.caught) { // 잡힘(관전 아웃): 그림은 죽은 자리 그대로 전시 + 시체는 그 아래로(살짝 겹침)
         const sc = p.scale;
+        if (p.gun) p.gun.setVisible(false); // (술래는 안 잡히지만) 방어적으로 총 숨김
+        if (p.gunShot) p.gunShot.setVisible(false);
         if (p.currentAnim !== '__dead') {
           p.currentAnim = '__dead';
           p.body.anims.stop();
@@ -1257,6 +1332,12 @@ export class GameScene extends Phaser.Scene {
         this._setAnim(p, p.localAnim);
       }
 
+      // 술래: 발사 중엔 점프/낙하 포즈를 잠깐 서있는(이동) 포즈로 → 총 오버레이와 정렬
+      if (p.role === 'seeker' && time < (p.gunShotUntil || 0)) {
+        const a = id === this.myId ? p.localAnim : p.anim;
+        if (a === 'jump' || a === 'fall') this._setAnim(p, 'run');
+      }
+
       const off = p.z || 0;
       p.body.x = p.x;
       p.body.y = p.y - off;
@@ -1281,11 +1362,45 @@ export class GameScene extends Phaser.Scene {
         p.skin.setFlipX(false);
       }
 
-      // 술래(본인)는 항상 맨 앞에 그려 → 숨는이 위장 그림이 술래 앞으로 와서
-      // 무빙만으로 들키는 것 방지(겹쳐도 술래가 위)
-      if (id === this.myId && this.myRole === 'seeker') {
-        p.body.setDepth(DEPTH_SEEKER);
-        p.skin.setDepth(DEPTH_SEEKER + 0.1);
+      // 위장(그림 표시) 중인 숨는이는 술래보다 항상 뒤로 눌러, 술래가 무빙만으로
+      // 들키는 것을 방지. 단, 캔버스를 집어넣고 일반 이동 중인 숨는이는 손대지 않아
+      // 정상 2.5D(Y정렬)로 술래와 앞뒤가 자연스럽게 결정된다(밟히는 것처럼 안 보임).
+      if (p.role === 'hider' && p.skin.visible && seekerY != null) {
+        const dep = Math.min(p.y, seekerY - 1);
+        p.body.setDepth(dep);
+        p.skin.setDepth(dep + 0.05);
+      }
+
+      // 술래 총 오버레이: 몸/코스튬 위에 한 겹 더 (발사 중엔 gun_moving 위에 gun_shot 동시 표시)
+      if (p.gun) {
+        const editingSelf = id === this.myId && this.drawState !== 'closed';
+        const firing = time < (p.gunShotUntil || 0);
+        if (editingSelf) {
+          p.gun.setVisible(false); // 꾸미기 중엔 가림(그리는 부위 안 가리게)
+          if (p.gunShot) p.gunShot.setVisible(false);
+        } else {
+          const animState = id === this.myId ? p.localAnim : p.anim;
+          // 베이스: 이동 중이거나 발사 중이면 gun_moving, 그 외 gun_idle
+          const baseTex = (animState !== 'idle' || firing) ? 'gun_moving' : 'gun_idle';
+          if (p.gun.texture.key !== baseTex) p.gun.setTexture(baseTex);
+          p.gun.x = p.x;
+          p.gun.y = p.y - off;
+          p.gun.setFlipX(p.facingLeft);
+          p.gun.setDepth(p.y + 0.25); // gun_moving(베이스)이 gun_shot 보다 위
+          p.gun.setVisible(true);
+          // 발사 중: gun_shot 을 베이스 아래에 겹쳐 '동시에' 표시 (gun_moving 이 위)
+          if (p.gunShot) {
+            if (firing) {
+              p.gunShot.x = p.x;
+              p.gunShot.y = p.y - off;
+              p.gunShot.setFlipX(p.facingLeft);
+              p.gunShot.setDepth(p.y + 0.2);
+              p.gunShot.setVisible(true);
+            } else {
+              p.gunShot.setVisible(false);
+            }
+          }
+        }
       }
 
       // 그림자: 실제 발에서 아래로 살짝 띄움

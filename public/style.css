@@ -1,3 +1,6 @@
+/* 픽셀(도트) 한글 비트맵 폰트 — UI 전체에 적용 (캔버스 텍스트는 별도) */
+@import url("https://cdn.jsdelivr.net/npm/galmuri/dist/galmuri.css");
+
 * { box-sizing: border-box; }
 
 html, body {
@@ -6,7 +9,7 @@ html, body {
   height: 100%;
   background: #0b0d12;
   color: #e7e9ee;
-  font-family: "Segoe UI", "Malgun Gothic", sans-serif;
+  font-family: "Galmuri11", "Malgun Gothic", monospace;
   overflow: hidden;
 }
 
@@ -38,131 +41,118 @@ html, body {
 }
 
 /* ============================================================
-   게임풍 HUD 카드 (공통)
+   픽셀(도트) 게임풍 HUD 카드 (공통)
+   - 플랫 컬러 + 굵은 픽셀 베벨(밝은 좌상단 / 어두운 우하단) + 하드 그림자
    ============================================================ */
 .hud-card {
   position: fixed;
   z-index: 20;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
-  border-radius: 14px;
-  background:
-    linear-gradient(180deg, rgba(38, 44, 60, 0.92), rgba(20, 24, 34, 0.94));
-  border: 1px solid rgba(255, 255, 255, 0.10);
+  gap: 8px;
+  padding: 7px 9px;
+  background: #232a3d;
+  border: 2px solid #0a0c14;          /* 검은 외곽선(도트 테두리) */
+  border-radius: 0;                    /* 픽셀 = 직각 */
   box-shadow:
-    0 10px 28px rgba(0, 0, 0, 0.5),
-    inset 0 1px 0 rgba(255, 255, 255, 0.10),
-    inset 0 0 0 1px rgba(0, 0, 0, 0.25);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
+    inset 2px 2px 0 0 rgba(255, 255, 255, 0.14),   /* 좌상단 하이라이트 */
+    inset -2px -2px 0 0 rgba(0, 0, 0, 0.5),         /* 우하단 음영 */
+    4px 4px 0 0 rgba(0, 0, 0, 0.45);                /* 하드 드롭섀도 */
+  image-rendering: pixelated;
   user-select: none;
 }
 
 /* ---- 역할 카드 (좌상단) ---- */
-#role-badge { top: 14px; left: 14px; padding: 8px 14px 8px 8px; }
+#role-badge { top: 14px; left: 14px; padding: 6px 12px 6px 6px; }
 #role-badge .rb-icon {
-  width: 34px;
-  height: 34px;
+  width: 32px;
+  height: 32px;
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 18px;
-  border-radius: 10px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0.04));
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.10);
-  transition: box-shadow 0.25s, background 0.25s;
+  background: #11141d;
+  box-shadow:
+    inset 2px 2px 0 0 rgba(255, 255, 255, 0.08),
+    inset -2px -2px 0 0 rgba(0, 0, 0, 0.55);
+  color: #cfd4e2;
 }
-#role-badge .rb-text { display: flex; flex-direction: column; line-height: 1.15; }
+#role-badge .rb-icon svg { width: 20px; height: 20px; fill: currentColor; display: block; }
+#role-badge .rb-icon .ic { display: none; }
+#role-badge.seeker .rb-icon .ic-seeker { display: block; }
+#role-badge.hider  .rb-icon .ic-hider  { display: block; }
+
+#role-badge .rb-text { display: flex; flex-direction: column; line-height: 1.25; }
 #role-badge .rb-title {
-  font-weight: 800;
-  font-size: 14px;
-  letter-spacing: 1.5px;
+  font-size: 13px;
+  letter-spacing: 2px;
   text-transform: uppercase;
 }
 #role-badge .rb-sub {
-  font-size: 11px;
-  font-weight: 600;
-  color: #9aa1b2;
-  letter-spacing: 0.2px;
+  font-size: 10px;
+  color: #8b92a6;
+  letter-spacing: 0.5px;
 }
-/* 역할별 강조색 + 아이콘 글로우 */
-#role-badge.seeker { border-color: rgba(255, 91, 91, 0.55); }
-#role-badge.seeker .rb-title { color: #ff7a7a; text-shadow: 0 0 12px rgba(255, 91, 91, 0.45); }
-#role-badge.seeker .rb-icon {
-  background: linear-gradient(180deg, rgba(255, 91, 91, 0.32), rgba(255, 91, 91, 0.10));
-  box-shadow: inset 0 0 0 1px rgba(255, 120, 120, 0.45), 0 0 14px rgba(255, 91, 91, 0.35);
-  animation: hudPulseRed 2.2s ease-in-out infinite;
-}
-#role-badge.hider { border-color: rgba(107, 255, 158, 0.5); }
-#role-badge.hider .rb-title { color: #74ffa6; text-shadow: 0 0 12px rgba(107, 255, 158, 0.4); }
-#role-badge.hider .rb-icon {
-  background: linear-gradient(180deg, rgba(107, 255, 158, 0.28), rgba(107, 255, 158, 0.08));
-  box-shadow: inset 0 0 0 1px rgba(107, 255, 158, 0.4), 0 0 14px rgba(107, 255, 158, 0.3);
-}
-@keyframes hudPulseRed {
-  0%, 100% { box-shadow: inset 0 0 0 1px rgba(255, 120, 120, 0.45), 0 0 10px rgba(255, 91, 91, 0.25); }
-  50%      { box-shadow: inset 0 0 0 1px rgba(255, 120, 120, 0.6),  0 0 20px rgba(255, 91, 91, 0.55); }
-}
+/* 역할별 강조색 (글로우 대신 또렷한 색) */
+#role-badge.seeker { border-color: #0a0c14; }
+#role-badge.seeker .rb-title { color: #ff6b6b; }
+#role-badge.seeker .rb-icon  { color: #ff6b6b; }
+#role-badge.hider  .rb-title { color: #5be08a; }
+#role-badge.hider  .rb-icon  { color: #5be08a; }
 
 /* ---- 음성채팅 컨트롤 (우하단) ---- */
-#voice-panel { bottom: 14px; right: 14px; gap: 6px; padding: 7px 9px; }
+#voice-panel { bottom: 14px; right: 14px; gap: 5px; padding: 6px 7px; }
 #voice-panel .vc-btn {
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 17px;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02));
-  color: #e7e9ee;
+  padding: 0;
+  border: 2px solid #0a0c14;
+  border-radius: 0;
+  background: #2d3650;
+  color: #aeb4c4;
   cursor: pointer;
-  transition: transform 0.08s, box-shadow 0.15s, border-color 0.15s, background 0.15s, filter 0.15s;
+  box-shadow:
+    inset 2px 2px 0 0 rgba(255, 255, 255, 0.12),
+    inset -2px -2px 0 0 rgba(0, 0, 0, 0.5);
 }
-#voice-panel .vc-btn:hover { background: linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.05)); }
-#voice-panel .vc-btn:active { transform: translateY(1px); }
-#voice-panel .vc-ico { line-height: 1; pointer-events: none; }
+#voice-panel .vc-btn svg { width: 16px; height: 16px; fill: currentColor; display: block; pointer-events: none; }
+#voice-panel .vc-btn:active,
+#voice-panel .vc-btn.pressed {
+  /* 눌림: 베벨 반전 */
+  box-shadow:
+    inset -2px -2px 0 0 rgba(255, 255, 255, 0.1),
+    inset 2px 2px 0 0 rgba(0, 0, 0, 0.55);
+}
 
-/* 참여 중(헤드셋 켜짐) */
-#voice-panel.on #vc-power,
-#voice-panel.muted #vc-power {
-  border-color: rgba(107, 255, 158, 0.55);
-  box-shadow: 0 0 12px rgba(107, 255, 158, 0.35), inset 0 0 0 1px rgba(107, 255, 158, 0.35);
-  color: #74ffa6;
-}
-/* 마이크 상태 */
-#voice-panel.on #vc-mic {
-  border-color: rgba(107, 255, 158, 0.55);
-  color: #74ffa6;
-  box-shadow: 0 0 12px rgba(107, 255, 158, 0.3), inset 0 0 0 1px rgba(107, 255, 158, 0.3);
-}
-#voice-panel.muted #vc-mic {
-  border-color: rgba(255, 216, 59, 0.55);
-  color: #ffd83b;
-}
-/* 미참여: 마이크/볼륨 비활성 느낌 */
-#voice-panel.off #vc-mic { filter: grayscale(1) opacity(0.55); }
+/* 마이크 mute 사선(평소 숨김 → 음소거일 때만 표시) */
+#voice-panel .mic-slash { display: none; }
+#voice-panel .mic-slash rect { fill: #ff5b5b; }
+#voice-panel.muted .vc-mic .mic-slash { display: block; }
+
+/* 상태별 색 */
+#voice-panel.on  #vc-power,
+#voice-panel.muted #vc-power { color: #5be08a; }
+#voice-panel.on  #vc-mic { color: #5be08a; }
+#voice-panel.muted #vc-mic { color: #ffd83b; }
+#voice-panel.off #vc-mic { color: #5a6072; }
 #voice-panel.off .vc-count { display: none; }
 
-/* 참여 인원 배지 */
+/* 참여 인원 배지 ("참가자 N") */
 #voice-panel .vc-count {
-  min-width: 20px;
   height: 20px;
-  padding: 0 6px;
+  padding: 0 8px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   font-size: 11px;
-  font-weight: 800;
-  border-radius: 999px;
-  background: rgba(0, 0, 0, 0.35);
-  color: #cfe9d8;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  white-space: nowrap;
+  border: 2px solid #0a0c14;
+  background: #11141d;
+  color: #9fe9bd;
 }
 
 /* 볼륨: 평소엔 접혀 있다가 패널에 마우스 올리면 펼쳐짐 */
@@ -173,48 +163,49 @@ html, body {
   max-width: 0;
   opacity: 0;
   overflow: hidden;
-  transition: max-width 0.28s ease, opacity 0.2s ease, margin 0.28s ease;
+  transition: max-width 0.25s steps(6), opacity 0.18s, margin 0.25s steps(6);
 }
 #voice-panel:hover .vc-vol,
 #voice-panel:focus-within .vc-vol {
-  max-width: 130px;
+  max-width: 132px;
   opacity: 1;
-  margin-left: 2px;
+  margin-left: 3px;
 }
-#voice-panel .vc-vol-ico { font-size: 14px; line-height: 1; }
+#voice-panel .vc-vol-ico { width: 16px; height: 16px; flex: 0 0 auto; color: #aeb4c4; }
+#voice-panel .vc-vol-ico svg { width: 16px; height: 16px; fill: currentColor; display: block; }
 
-/* 커스텀 슬라이더 */
+/* 픽셀 슬라이더 (직각 트랙 + 사각 썸) */
 #vc-volume {
   -webkit-appearance: none;
   appearance: none;
   width: 96px;
-  height: 6px;
-  border-radius: 999px;
-  background: linear-gradient(90deg, #3bd16f 0%, #3bd16f var(--vc-fill, 100%), rgba(255,255,255,0.16) var(--vc-fill, 100%));
+  height: 10px;
+  border: 2px solid #0a0c14;
+  background: linear-gradient(90deg, #5be08a 0%, #5be08a var(--vc-fill, 100%), #11141d var(--vc-fill, 100%));
   cursor: pointer;
   outline: none;
 }
 #vc-volume::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 14px;
+  width: 8px;
   height: 14px;
-  border-radius: 50%;
-  background: #fff;
-  border: 2px solid #3bd16f;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  margin-top: -4px;
+  border-radius: 0;
+  background: #eef2f7;
+  border: 2px solid #0a0c14;
+  box-shadow: inset 1px 1px 0 rgba(255, 255, 255, 0.6);
   cursor: pointer;
 }
 #vc-volume::-moz-range-thumb {
-  width: 14px;
+  width: 8px;
   height: 14px;
-  border-radius: 50%;
-  background: #fff;
-  border: 2px solid #3bd16f;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  border-radius: 0;
+  background: #eef2f7;
+  border: 2px solid #0a0c14;
   cursor: pointer;
 }
-#vc-volume::-moz-range-track { height: 6px; border-radius: 999px; background: transparent; }
+#vc-volume::-moz-range-track { height: 10px; background: transparent; }
 
 /* 오류/안내 토스트 (패널 위로 떠오름) */
 #voice-panel .vc-toast {
@@ -222,18 +213,17 @@ html, body {
   bottom: calc(100% + 8px);
   right: 0;
   white-space: nowrap;
-  background: #0f1219;
-  border: 1px solid rgba(255, 107, 107, 0.5);
+  background: #11141d;
+  border: 2px solid #ff5b5b;
   color: #ff8b8b;
-  font-size: 12px;
-  font-weight: 600;
-  padding: 6px 10px;
-  border-radius: 8px;
-  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.55);
+  font-size: 11px;
+  padding: 6px 9px;
+  border-radius: 0;
+  box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.45);
   opacity: 0;
-  transform: translateY(4px);
+  transform: translateY(3px);
   pointer-events: none;
-  transition: opacity 0.18s, transform 0.18s;
+  transition: opacity 0.15s, transform 0.15s;
 }
 #voice-panel .vc-toast.show { opacity: 1; transform: translateY(0); }
 
