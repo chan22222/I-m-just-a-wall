@@ -8,9 +8,8 @@
 // =============================================================================
 
 const PALETTE = [
-  '#000000', '#ffffff', '#e23b3b', '#f08c1d', '#f5d020',
-  '#3bd16f', '#1d9bf0', '#2f4bf0', '#9b59f0', '#f04bb0',
-  '#7a4a2b', '#bdbdbd', '#5a8f3c', '#1f6d6d', '#ff9ec4',
+  '#000000', '#ffffff', '#e23b3b', '#f08c1d', '#f5d020', // 검 흰 빨 주 노
+  '#3bd16f', '#1d9bf0', '#2f4bf0', '#9b59f0', '#bdbdbd', // 초 파 남 보 회
 ];
 
 export class DrawingBoard {
@@ -89,8 +88,8 @@ export class DrawingBoard {
   }
 
   _updateCurColor() {
-    const el = document.getElementById('cur-color');
-    if (el) el.style.background = this.color;
+    const el = document.getElementById('color-picker');
+    if (el) el.value = this.color;
   }
 
   isOpen() {
@@ -234,6 +233,19 @@ export class DrawingBoard {
     document.getElementById('brush-size').addEventListener('input', (e) => {
       this.setBrush(parseInt(e.target.value, 10));
     });
+
+    // 컬러 피커: 아무 색이나 직접 선택 (현재색 박스 또는 🎨 버튼으로 열림)
+    const picker = document.getElementById('color-picker');
+    if (picker) {
+      picker.value = this.color;
+      picker.addEventListener('input', (e) => {
+        this.color = e.target.value;
+        this.colorNum = parseInt(this.color.slice(1), 16);
+        // 직접 고른 색이므로 팔레트 선택 표시 해제
+        const wrap = document.getElementById('palette');
+        if (wrap) wrap.querySelectorAll('.swatch').forEach((s) => s.classList.remove('active'));
+      });
+    }
     const undoBtn = document.getElementById('btn-undo');
     if (undoBtn) undoBtn.addEventListener('click', () => this.undo());
     const redoBtn = document.getElementById('btn-redo');

@@ -43,7 +43,10 @@
   <div id="paint-toolbar" class="hidden">
     <div class="pt-row">
       <div class="pt-group">
-        <div id="cur-color" class="cur-color" data-tip="현재 색"></div>
+        <label id="cur-color" class="cur-color" data-tip="현재 색 · 클릭해서 색 선택">
+          <input type="color" id="color-picker" value="#e23b3b" />
+          <span class="cur-color-ico" aria-hidden="true">🎨</span>
+        </label>
         <div class="palette" id="palette"></div>
       </div>
       <label class="pt-brush" data-tip="브러시 크기 · [ / ] 키">

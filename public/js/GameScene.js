@@ -421,26 +421,35 @@ export class GameScene extends Phaser.Scene {
   _eyedropper() {
     const me = this.players.get(this.myId);
     if (!me) return;
+    const cam = this.cameras.main;
     const ptr = this.input.activePointer;
-
-    // 1) 그림 영역 안에 칠해진 셀 → 정확한 색 즉시
+    const GRID = this.board.GRID;
     const { left, top, cell } = this._drawRegion(me);
     const cx = Math.floor((ptr.worldX - left) / cell);
     const cy = Math.floor((ptr.worldY - top) / cell);
-    if (cx >= 0 && cy >= 0 && cx < this.board.GRID && cy < this.board.GRID && this.board.cells[cy][cx]) {
+    const inGrid = cx >= 0 && cy >= 0 && cx < GRID && cy < GRID;
+
+    // 1) 칠해진 칸 → 정확한 색 즉시
+    if (inGrid && this.board.cells[cy][cx]) {
       this.board.pickColor(this.board.cells[cy][cx]);
       return;
     }
 
-    // 2) 그 외 → 실제 렌더된 화면 픽셀 색을 추출(맵 배경, 기둥/상자/화분, 다른 캐릭터 등)
+    // 2) 그 외 → 화면 픽셀 추출. 칸 안(빈칸)은 격자선을 피하려 '칸 중앙'을, 칸 밖(맵)은 커서를 샘플
     const r = this.game.renderer;
-    if (r && r.snapshotPixel) {
-      r.snapshotPixel(ptr.x, ptr.y, (color) => {
-        const hex = '#' + [color.red, color.green, color.blue]
-          .map((v) => v.toString(16).padStart(2, '0')).join('');
-        this.board.pickColor(hex);
-      });
+    if (!r || !r.snapshotPixel) return;
+    let px = ptr.x, py = ptr.y;
+    if (inGrid) {
+      const wx = left + (cx + 0.5) * cell;
+      const wy = top + (cy + 0.5) * cell;
+      px = (wx - cam.worldView.x) * cam.zoom;
+      py = (wy - cam.worldView.y) * cam.zoom;
     }
+    r.snapshotPixel(px, py, (color) => {
+      const hex = '#' + [color.red, color.green, color.blue]
+        .map((v) => v.toString(16).padStart(2, '0')).join('');
+      this.board.pickColor(hex);
+    });
   }
 
   // 그리기 모드에서 캐릭터 위에 격자/칠한 셀/테두리 표시
@@ -450,8 +459,7 @@ export class GameScene extends Phaser.Scene {
     const GRID = this.board.GRID;
     const lw = 1 / this.cameras.main.zoom; // 줌과 무관하게 화면상 ~1px 선
     g.clear();
-    g.fillStyle(0x000000, 0.2);
-    g.fillRect(left, top, size, size);
+    // (검은 반투명 배경 제거 — 캐릭터 색이 어두워져 스포이드가 틀린 색을 뽑던 원인)
     // 칠한 셀
     for (let y = 0; y < GRID; y++) {
       for (let x = 0; x < GRID; x++) {
@@ -461,18 +469,19 @@ export class GameScene extends Phaser.Scene {
         g.fillRect(left + x * cell, top + y * cell, cell, cell);
       }
     }
-    // 격자선
-    g.lineStyle(lw, 0xffffff, 0.18);
+    // 격자선 (더 투명하게)
+    g.lineStyle(lw, 0xffffff, 0.08);
     for (let i = 0; i <= GRID; i++) {
       g.lineBetween(left + i * cell, top, left + i * cell, top + size);
       g.lineBetween(left, top + i * cell, left + size, top + i * cell);
     }
     // 테두리(그릴 수 있는 영역 표시)
-    g.lineStyle(lw * 2, 0xffe27a, 0.95);
+    g.lineStyle(lw * 2, 0xffe27a, 0.9);
     g.strokeRect(left, top, size, size);
 
-    // 브러시 미리보기: 커서 위치에 칠해질 영역을 반투명으로(스포이드 모드 제외)
-    if (!this._eyedropMode) {
+    // 브러시 미리보기: 커서 위치에 칠해질 영역을 반투명으로
+    // (스포이드 모드 또는 Space 추출 중엔 숨김 → 미리보기 색이 샘플에 섞이지 않게)
+    if (!this._eyedropMode && !this.keys.space.isDown) {
       const ptr = this.input.activePointer;
       const hx = Math.floor((ptr.worldX - left) / cell);
       const hy = Math.floor((ptr.worldY - top) / cell);
@@ -900,9 +909,18 @@ export class GameScene extends Phaser.Scene {
       this._renderDrawOverlay(me);
     }
 
-    // [4단계] 술래 시야 — 줌인 편집(drawing)만 제외하고 항상 유지(캔버스 들어도 시야 안 풀림)
-    if (this.myRole === 'seeker' && me && this.drawState !== 'drawing') {
-      this._updateVision(me);
+    // [4단계] 술래 시야 + 안개
+    //  - 평소 줌(≈1): 안개 보이고 부채꼴 시야 갱신
+    //  - 그리기 줌인 중: 시야 고정. 충분히 확대(≈최대)됐을 때만 안개를 걷음
+    //    → 주변이 화면 밖으로 벗어났을 때만 걷어, 맵은 안 드러나고 캐릭터만 잘 보이게
+    if (this.myRole === 'seeker' && me && this.fog) {
+      const zoom = this.cameras.main.zoom;
+      if (zoom <= 1.05) {
+        this.fog.setVisible(true);
+        this._updateVision(me);
+      } else {
+        this.fog.setVisible(zoom < DRAW_ZOOM * 0.85); // 거의 다 확대되면 안개 숨김
+      }
     }
   }
 }
