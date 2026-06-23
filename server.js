@@ -164,10 +164,44 @@ io.on('connection', (socket) => {
     if (remaining === 0) io.to(currentRoomId).emit('gameOver', { winner: 'seeker' });
   });
 
+  // -------------------------------------------------------------------------
+  // 음성채팅 시그널링 (WebRTC P2P 메시)
+  //   voiceJoin  : 새 참여자에게 기존 참여자 목록(voicePeers)을 주고 명단에 추가
+  //   voiceLeave : 명단에서 빼고 다른 참여자에게 알림(voiceLeft)
+  //   voiceSignal: offer/answer/ICE 후보를 대상 소켓에게 그대로 중계
+  // -------------------------------------------------------------------------
+  function leaveVoice() {
+    if (!currentRoomId) return;
+    const room = rooms.get(currentRoomId);
+    if (!room || !room.voice) return;
+    if (room.voice.delete(socket.id)) {
+      socket.to(currentRoomId).emit('voiceLeft', { id: socket.id });
+    }
+  }
+
+  socket.on('voiceJoin', () => {
+    if (!currentRoomId) return;
+    const room = rooms.get(currentRoomId);
+    if (!room) return;
+    if (!room.voice) room.voice = new Set();
+    // 새 참여자가 발신자가 되어 기존 참여자에게 offer 를 보낸다(중복 offer 방지)
+    const peers = [...room.voice].filter((id) => id !== socket.id);
+    socket.emit('voicePeers', { ids: peers });
+    room.voice.add(socket.id);
+  });
+
+  socket.on('voiceLeave', () => leaveVoice());
+
+  socket.on('voiceSignal', ({ to, desc, ice } = {}) => {
+    if (!to) return;
+    io.to(to).emit('voiceSignal', { from: socket.id, desc, ice });
+  });
+
   socket.on('disconnect', () => {
     if (!currentRoomId) return;
     const room = rooms.get(currentRoomId);
     if (!room) return;
+    leaveVoice();
     room.players.delete(socket.id);
     socket.to(currentRoomId).emit('playerLeft', { id: socket.id });
     console.log(`[leave] room=${currentRoomId} id=${socket.id} total=${room.players.size}`);

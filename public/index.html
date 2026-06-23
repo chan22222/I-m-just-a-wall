@@ -23,11 +23,34 @@
     <div class="hud-row"><b>Space</b> 점프</div>
     <div class="hud-row"><b>좌클릭</b> 사격 (술래)</div>
     <div class="hud-row"><b>T</b> 채팅</div>
+    <div class="hud-row"><b>B</b> 음성채팅 / <b>V</b> 마이크</div>
     <div class="hud-row"><b>마우스</b> 술래 시야 방향</div>
   </div>
 
-  <!-- 역할 표시 -->
-  <div id="role-badge">접속 중...</div>
+  <!-- 역할 표시 (게임풍 HUD 카드) -->
+  <div id="role-badge" class="hud-card">
+    <span class="rb-icon">⏳</span>
+    <span class="rb-text">
+      <span class="rb-title">접속 중</span>
+      <span class="rb-sub">잠시만요…</span>
+    </span>
+  </div>
+
+  <!-- 음성채팅 컨트롤 (우하단, 호버 시 볼륨 슬라이더) -->
+  <div id="voice-panel" class="hud-card off">
+    <div id="voice-toast" class="vc-toast"></div>
+    <button id="vc-power" class="vc-btn" type="button" title="음성채팅 참여 (B)">
+      <span class="vc-ico">🎧</span>
+    </button>
+    <button id="vc-mic" class="vc-btn" type="button" title="마이크 ON/OFF (V)">
+      <span class="vc-ico">🎙️</span>
+    </button>
+    <span id="vc-count" class="vc-count" title="참여 인원">1</span>
+    <div class="vc-vol">
+      <span class="vc-vol-ico">🔊</span>
+      <input id="vc-volume" type="range" min="0" max="100" value="100" title="볼륨" />
+    </div>
+  </div>
 
   <!-- 채팅 (우상단). T로 입력창 열기 / Enter 전송 / Esc 취소 -->
   <div id="chat">

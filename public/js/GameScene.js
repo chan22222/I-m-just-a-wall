@@ -10,6 +10,7 @@
 // =============================================================================
 
 import { DrawingBoard } from './DrawingBoard.js';
+import { VoiceChat } from './VoiceChat.js';
 
 const SPEED = 240;        // 이동 속도(px/s)
 const SEEKER_SPEED = 360; // 술래 이동 속도(1.5배)
@@ -21,6 +22,8 @@ const CONE_R = 780;       // 시야 거리(가시거리 더 늘림)
 const NEAR_R = 180;       // 술래 주변 항상 보이는 반경 — 커진 캐릭터를 안 가리게
 const WHISTLE_R = 420;        // 🎵 이펙트(숨는이)가 뜨는 반경
 const WHISTLE_MAX_R = 800;    // 소리가 들리는 최대 거리(이 거리에서 가장 작게)
+const VOICE_NEAR_R = 160;     // 음성채팅: 이 거리 안은 최대 볼륨
+const VOICE_MAX_R = 700;      // 음성채팅: 이 거리부터는 안 들림(볼륨 0)
 // 사격(술래) — 마우스 방향 발사로 숨는이 잡기
 const GUN_RANGE = 780;    // 사거리(= 시야 거리)
 const HIT_RADIUS = 48;    // 명중 판정 반경(조준선에서 이 거리 안이면 맞음)
@@ -122,6 +125,8 @@ export class GameScene extends Phaser.Scene {
       esc: 'ESC',                     // 그리기 취소
       openBracket: 'OPEN_BRACKET',    // [ 브러시 작게
       closeBracket: 'CLOSED_BRACKET', // ] 브러시 크게
+      v: 'V', b: 'B',                 // V 마이크 ON/OFF · B 음성채팅 참여
+      volDown: 'MINUS', volUp: 'PLUS', // − / = 음성 볼륨 조절
     }, false); // capture 끔 → 채팅 입력창에 글자가 정상 입력되도록
 
     this._setupChat();
@@ -169,6 +174,11 @@ export class GameScene extends Phaser.Scene {
 
     this._setupVision();   // [4단계]
     this._setupNetwork();  // [3단계]
+
+    // 음성채팅 (V 마이크 / B 참여 / 호버 슬라이더 볼륨) — 소켓 생성 후 연결
+    this.voice = new VoiceChat(this.socket, { onStatus: (s) => this._updateVoiceStatus(s) });
+    this._setupVoiceUI();
+    this._updateVoiceStatus({ joined: false });
 
     this.scale.on('resize', this._onResize, this);
   }
@@ -831,14 +841,100 @@ export class GameScene extends Phaser.Scene {
   _updateRoleBadge() {
     const badge = document.getElementById('role-badge');
     if (!badge) return;
+    const icon = badge.querySelector('.rb-icon');
+    const title = badge.querySelector('.rb-title');
+    const sub = badge.querySelector('.rb-sub');
     if (this.myRole === 'seeker') {
-      badge.textContent = 'SEEKER';
-      badge.dataset.tip = '숨어있는 HIDER를 찾으세요';
-      badge.className = 'seeker';
+      badge.className = 'hud-card seeker';
+      if (icon) icon.textContent = '🔍';
+      if (title) title.textContent = 'SEEKER';
+      if (sub) sub.textContent = '숨은 HIDER를 찾으세요';
     } else {
-      badge.textContent = 'HIDER';
-      badge.dataset.tip = '위장하고 숨으세요';
-      badge.className = 'hider';
+      badge.className = 'hud-card hider';
+      if (icon) icon.textContent = '🐱';
+      if (title) title.textContent = 'HIDER';
+      if (sub) sub.textContent = '위장하고 숨으세요';
+    }
+  }
+
+  // 음성채팅 거리별 볼륨: 가까울수록 크게, VOICE_MAX_R 밖이면 0(안 들림)
+  _updateVoiceVolumes() {
+    if (!this.voice || !this.voice.joined || this.voice.peers.size === 0) return;
+    const me = this.players.get(this.myId);
+    if (!me) return;
+    const span = VOICE_MAX_R - VOICE_NEAR_R;
+    for (const peerId of this.voice.peers.keys()) {
+      const p = this.players.get(peerId);
+      let vol = 1;
+      if (p) {
+        const d = Phaser.Math.Distance.Between(me.x, me.y, p.x, p.y);
+        vol = Phaser.Math.Clamp((VOICE_MAX_R - d) / span, 0, 1);
+      }
+      this.voice.setPeerVolume(peerId, vol);
+    }
+  }
+
+  // 음성 컨트롤 UI 바인딩(헤드셋/마이크 버튼 + 볼륨 슬라이더). create 에서 1회 호출.
+  _setupVoiceUI() {
+    const power = document.getElementById('vc-power');
+    const mic = document.getElementById('vc-mic');
+    const vol = document.getElementById('vc-volume');
+    this._voiceToast = document.getElementById('voice-toast');
+    if (power) power.addEventListener('click', () => this.voice && this.voice.toggle());
+    if (mic) mic.addEventListener('click', () => this.voice && this.voice.toggleMic());
+    if (vol) {
+      const apply = () => {
+        const val = parseInt(vol.value, 10) || 0;
+        vol.style.setProperty('--vc-fill', val + '%');
+        if (this.voice) this.voice.setMaster(val / 100);
+      };
+      vol.addEventListener('input', apply);
+      vol.style.setProperty('--vc-fill', vol.value + '%');
+    }
+  }
+
+  // 음성채팅 상태 표시. VoiceChat 이 상태가 바뀔 때마다 호출 → 실시간 반영.
+  // 항상 this.voice 의 현재 상태를 읽어 그린다(전달된 s 의 error 는 토스트로만 사용).
+  _updateVoiceStatus(s) {
+    if (s && s.error) this._showVoiceToast(s.error);
+    this._renderVoiceState();
+  }
+
+  _showVoiceToast(msg) {
+    const el = this._voiceToast || document.getElementById('voice-toast');
+    if (!el) return;
+    el.textContent = '⚠️ ' + msg;
+    el.classList.add('show');
+    clearTimeout(this._voiceToastTimer);
+    this._voiceToastTimer = setTimeout(() => el.classList.remove('show'), 3500);
+  }
+
+  _renderVoiceState() {
+    const panel = document.getElementById('voice-panel');
+    if (!panel) return;
+    const v = this.voice;
+    const joined = !!(v && v.joined);
+    const micOn = !!(v && v.micOn);
+
+    panel.className = 'hud-card ' + (joined ? (micOn ? 'on' : 'muted') : 'off');
+
+    const mic = document.getElementById('vc-mic');
+    const micIco = mic && mic.querySelector('.vc-ico');
+    if (micIco) micIco.textContent = (joined && !micOn) ? '🔇' : '🎙️';
+    if (mic) mic.title = joined ? (micOn ? '마이크 끄기 (V)' : '마이크 켜기 (V)') : '음성채팅 참여 후 사용 (B)';
+
+    const power = document.getElementById('vc-power');
+    if (power) power.title = joined ? '음성채팅 나가기 (B)' : '음성채팅 참여 (B)';
+
+    const count = document.getElementById('vc-count');
+    if (count) count.textContent = String((v ? v.peers.size : 0) + 1);
+
+    // 슬라이더를 현재 볼륨에 동기화(드래그 중이 아닐 때만 — 키로 바꿨을 때 반영)
+    const vol = document.getElementById('vc-volume');
+    if (vol && v && document.activeElement !== vol) {
+      const pct = Math.round((v.master == null ? 1 : v.master) * 100);
+      vol.value = String(pct);
+      vol.style.setProperty('--vc-fill', pct + '%');
     }
   }
 
@@ -1068,6 +1164,18 @@ export class GameScene extends Phaser.Scene {
     if (Phaser.Input.Keyboard.JustDown(this.keys.t) &&
         (this.drawState === 'closed' || this.drawState === 'holding')) {
       this._openChat();
+    }
+    //  V = 마이크 ON/OFF · B = 음성채팅 참여 ON/OFF · − / = 볼륨
+    if (this.voice) {
+      if (Phaser.Input.Keyboard.JustDown(this.keys.v)) this.voice.toggleMic();
+      if (Phaser.Input.Keyboard.JustDown(this.keys.b)) this.voice.toggle();
+      if (Phaser.Input.Keyboard.JustDown(this.keys.volUp)) this.voice.adjustVolume(0.1);
+      if (Phaser.Input.Keyboard.JustDown(this.keys.volDown)) this.voice.adjustVolume(-0.1);
+    }
+    //  거리별 음성 볼륨(약 8Hz면 충분)
+    if (time - (this._lastVoiceVol || 0) > 120) {
+      this._lastVoiceVol = time;
+      this._updateVoiceVolumes();
     }
     //  그리기 모드 전용 키
     if (this.drawState === 'drawing') {
