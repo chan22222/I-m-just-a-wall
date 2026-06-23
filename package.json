@@ -1,0 +1,25 @@
+{
+  "name": "imjustawall",
+  "version": "1.0.0",
+  "description": "Phaser 3 2.5D top-view hide-and-seek game (Among Us / Goose Goose Duck style) with draw-your-own-disguise and seeker vision cone",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "keywords": [
+    "phaser",
+    "socket.io",
+    "game",
+    "hide-and-seek"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  }
+}

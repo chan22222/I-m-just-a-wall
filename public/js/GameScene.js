@@ -1,0 +1,721 @@
+// =============================================================================
+// GameScene.js  -  게임 본체 (2.5D 탑뷰 / 고양이 스프라이트)
+//   [1단계] Phaser 기본 세팅 + WASD 이동
+//   [2단계] 위장 그림 — 캐릭터 위에 직접 그리기(줌인 + 격자 페인팅)
+//   [3단계] Socket.io 멀티플레이 동기화 (이동/애니/점프/위장그림)
+//   [4단계] 술래 시야(부채꼴 마스킹) + 숨는 사람 은닉
+//   [5단계] 휘파람(E) 사운드 + 반경 내 이모티콘
+//
+//   조작: WASD 이동 / E 휘파람 / Space 점프 / Q 위장그리기 / 마우스 술래시야
+// =============================================================================
+
+import { DrawingBoard } from './DrawingBoard.js';
+
+const SPEED = 240;        // 이동 속도(px/s)
+const HOLD_SPEED = 55;    // 캔버스 든 채 이동 속도(매우 느림)
+const JUMP_VEL = 380;     // 점프 초기 상승 속도(z, px/s)
+const GRAVITY = 1200;     // 중력(z, px/s^2)
+const CONE_HALF = Phaser.Math.DEG_TO_RAD * 45; // 부채꼴 반각(전체 90도)
+const CONE_R = 540;       // 시야 거리(훨씬 멀리)
+const NEAR_R = 130;       // 술래 주변 항상 보이는 반경 — 커진 캐릭터를 안 가리게
+const WHISTLE_R = 420;
+const ROLE_COLOR = { seeker: 0xff5a5a, hider: 0x5fe08a };
+
+// 표시 규격 (캐릭터 96 → 144, 약 1.5배)
+const CAT_DH = 144;               // 고양이 표시 크기(정사각, origin 하단중심)
+const DRAW_REGION = 84;           // 위장 그림(=그리기 격자) 크기 — 캐릭터 몸통 크기에 맞춤
+const REGION_CY = 63;             // 그림 영역 중심 높이(발에서 위로) — 고양이/캔버스 몸통 위치
+const SHADOW_W = 81, SHADOW_H = 30;
+const VIS_OFFY = 66;              // 시야/카메라 원점 높이(발 → 몸통 중앙)
+const DRAW_ZOOM = 4;             // 그리기 모드 카메라 줌(작은 영역을 크게 보이게)
+// 스프라이트 프레임 여백 보정: 실제 그림은 32px 중 y[10..27]만 차지
+// anchor(발 기준점)에서 위로 — 실제 머리/발 위치 (CAT_DH/32 = 4.5 배율)
+const HEAD_OFF = Math.round(CAT_DH * (32 - 10) / 32); // 머리 꼭대기 ≈ 99
+const FEET_OFF = Math.round(CAT_DH * (32 - 27) / 32); // 실제 발바닥 ≈ 23
+
+// 뎁스 밴드 (배경 < 그림자 < 링 < 몸체/오브젝트(y) < 안개 < 이모티콘 < 그리기오버레이)
+const DEPTH_BG = -1000;
+const DEPTH_SHADOW = -5;
+const DEPTH_RING = -4;
+const DEPTH_FOG = 5000;
+const DEPTH_EMOJI = 6000;
+const DEPTH_DRAW = 7000;
+
+export class GameScene extends Phaser.Scene {
+  constructor() {
+    super('GameScene');
+  }
+
+  preload() {
+    this.load.spritesheet('cat_idle', 'character/1_Cat_Idle-Sheet.png', { frameWidth: 32, frameHeight: 32 });
+    this.load.spritesheet('cat_run', 'character/2_Cat_Run-Sheet.png', { frameWidth: 32, frameHeight: 32 });
+    this.load.spritesheet('cat_jump', 'character/3_Cat_Jump-Sheet.png', { frameWidth: 32, frameHeight: 32 });
+    this.load.spritesheet('cat_fall', 'character/4_Cat_Fall-Sheet.png', { frameWidth: 32, frameHeight: 32 });
+    this.load.spritesheet('cat_canvas', 'character/5_Cat_Canvas-Sheet.png', { frameWidth: 32, frameHeight: 32 });
+  }
+
+  create() {
+    this.world = { width: 1600, height: 1200 };
+    this.players = new Map();
+    this.props = [];
+    this.myId = null;
+    this.myRole = null;
+    this.facingAngle = 0;
+    this.lastSent = 0;
+    this.audioCtx = null;
+    // 캔버스 상태:
+    //   'closed'  : 평소(이동 가능, 캔버스 안 듦)
+    //   'opening' : 캔버스 꺼내는 애니(이동 불가, 전환)
+    //   'holding' : 캔버스 들고 멈춤(이동 불가, 위장 그림 표시) ← 마지막 프레임 고정
+    //   'drawing' : 캔버스에 그리는 편집 모드(줌인)
+    //   'closing' : 캔버스 집어넣는 애니(이동 불가, 전환)
+    // opening/closing(애니 재생) 중에는 키 입력이 막혀 연타 불가
+    this.drawState = 'closed';
+    this.openIntent = 'hold'; // 캔버스 꺼낼 때 의도: 'hold'(들고만) | 'draw'(편집)
+
+    this._makeAnims();
+    this._makePropTextures();
+    this._drawBackground();
+    this._spawnProps();
+
+    this.cameras.main.setBounds(0, 0, this.world.width, this.world.height);
+    this.cameraTarget = this.add.zone(this.world.width / 2, this.world.height / 2, 1, 1);
+    this.cameras.main.startFollow(this.cameraTarget, true, 0.18, 0.18);
+
+    this.keys = this.input.keyboard.addKeys({
+      w: 'W', a: 'A', s: 'S', d: 'D',
+      q: 'Q', e: 'E', r: 'R', space: 'SPACE',
+    });
+
+    // 우클릭(지우개) 시 브라우저 메뉴 방지
+    this.input.mouse.disableContextMenu();
+
+    // [2단계] 캐릭터 위 페인팅: 도구막대 + 포인터 입력
+    this.board = new DrawingBoard({
+      onApply: () => this._applyAndHold(),
+      onClose: () => this._cancelToHold(),
+    });
+    this.drawGfx = this.add.graphics().setDepth(DEPTH_DRAW).setVisible(false);
+
+    this._lastCell = null; // 빠르게 움직일 때 점 끊김 방지용(직전 칠한 셀)
+    this.input.on('pointerdown', (ptr) => {
+      if (!this.board.isOpen()) return;
+      this._lastCell = null; // 새 스트로크 시작(이전 획과 연결 안 함)
+      this._paintPointer(ptr);
+    });
+    this.input.on('pointermove', (ptr) => {
+      if (this.board.isOpen() && ptr.isDown) this._paintPointer(ptr);
+    });
+    this.input.on('pointerup', () => { this._lastCell = null; });
+
+    this._setupVision();   // [4단계]
+    this._setupNetwork();  // [3단계]
+
+    this.scale.on('resize', this._onResize, this);
+  }
+
+  // ===========================================================================
+  // 애니메이션 / 텍스처 / 배경
+  // ===========================================================================
+  _makeAnims() {
+    const A = this.anims;
+    if (!A.exists('cat_idle')) A.create({ key: 'cat_idle', frames: A.generateFrameNumbers('cat_idle', { start: 0, end: 7 }), frameRate: 8, repeat: -1 });
+    if (!A.exists('cat_run')) A.create({ key: 'cat_run', frames: A.generateFrameNumbers('cat_run', { start: 0, end: 9 }), frameRate: 16, repeat: -1 });
+    if (!A.exists('cat_jump')) A.create({ key: 'cat_jump', frames: A.generateFrameNumbers('cat_jump', { start: 0, end: 3 }), frameRate: 12, repeat: 0 });
+    if (!A.exists('cat_fall')) A.create({ key: 'cat_fall', frames: A.generateFrameNumbers('cat_fall', { start: 0, end: 3 }), frameRate: 12, repeat: 0 });
+    // 캔버스 꺼내기(그리기 진입). 한 번만 재생하고 마지막 프레임(캔버스) 유지
+    if (!A.exists('cat_canvas')) A.create({ key: 'cat_canvas', frames: A.generateFrameNumbers('cat_canvas', { start: 0, end: 3 }), frameRate: 9, repeat: 0 });
+  }
+
+  _makePropTextures() {
+    if (!this.textures.exists('propPillar')) {
+      const g = this.make.graphics({ add: false });
+      g.fillStyle(0x5a6273, 1); g.fillRect(8, 8, 24, 84);
+      g.fillStyle(0x474e5d, 1); g.fillRect(8, 8, 8, 84);
+      g.fillStyle(0x6e7689, 1); g.fillRect(26, 8, 6, 84);
+      g.fillStyle(0x3c424f, 1); g.fillRect(4, 84, 32, 11); g.fillRect(4, 2, 32, 10);
+      g.lineStyle(2, 0x262b34, 1); g.strokeRect(8, 8, 24, 84);
+      g.generateTexture('propPillar', 40, 96); g.destroy();
+    }
+    if (!this.textures.exists('propCrate')) {
+      const g = this.make.graphics({ add: false });
+      g.fillStyle(0x9c6b3f, 1); g.fillRoundedRect(2, 2, 44, 40, 4);
+      g.fillStyle(0x7d5430, 1); g.fillRect(2, 20, 44, 4); g.fillRect(22, 2, 4, 40);
+      g.lineStyle(2, 0x3a2a1a, 1); g.strokeRoundedRect(2, 2, 44, 40, 4);
+      g.generateTexture('propCrate', 48, 44); g.destroy();
+    }
+    if (!this.textures.exists('propPlant')) {
+      const g = this.make.graphics({ add: false });
+      g.fillStyle(0xb5703a, 1); g.fillRect(10, 40, 20, 14);
+      g.fillStyle(0x8c5530, 1); g.fillRect(8, 38, 24, 6);
+      g.fillStyle(0x2f8a47, 1); g.fillCircle(20, 26, 14); g.fillCircle(11, 30, 9); g.fillCircle(29, 30, 9);
+      g.fillStyle(0x43b061, 1); g.fillCircle(19, 21, 8);
+      g.generateTexture('propPlant', 40, 56); g.destroy();
+    }
+  }
+
+  _drawBackground() {
+    const g = this.add.graphics().setDepth(DEPTH_BG);
+    g.fillStyle(0x171b24, 1);
+    g.fillRect(0, 0, this.world.width, this.world.height);
+    g.lineStyle(1, 0x222838, 1);
+    const step = 64;
+    for (let x = 0; x <= this.world.width; x += step) g.lineBetween(x, 0, x, this.world.height);
+    for (let y = 0; y <= this.world.height; y += step) g.lineBetween(0, y, this.world.width, y);
+    g.lineStyle(6, 0x3a4356, 1);
+    g.strokeRect(0, 0, this.world.width, this.world.height);
+  }
+
+  _spawnProps() {
+    const layout = [
+      { tex: 'propPillar', x: 420, y: 360 }, { tex: 'propPillar', x: 1180, y: 360 },
+      { tex: 'propPillar', x: 420, y: 880 }, { tex: 'propPillar', x: 1180, y: 880 },
+      { tex: 'propCrate', x: 700, y: 500 }, { tex: 'propCrate', x: 760, y: 520 },
+      { tex: 'propCrate', x: 980, y: 760 },
+      { tex: 'propPlant', x: 560, y: 640 }, { tex: 'propPlant', x: 1040, y: 460 },
+      { tex: 'propPlant', x: 820, y: 940 },
+    ];
+    layout.forEach((o) => {
+      this.add.ellipse(o.x, o.y, 40, 14, 0x000000, 0.28).setDepth(DEPTH_SHADOW);
+      this.props.push(this.add.image(o.x, o.y, o.tex).setOrigin(0.5, 1).setDepth(o.y));
+    });
+  }
+
+  // ===========================================================================
+  // [4단계] 시야 시스템
+  // ===========================================================================
+  _setupVision() {
+    const W = this.scale.gameSize.width;
+    const H = this.scale.gameSize.height;
+    this._makeLightTextures(); // 가장자리가 흐린 빛 텍스처(부채꼴/근접 원)
+    this.fog = this.add.renderTexture(0, 0, W, H)
+      .setOrigin(0, 0).setScrollFactor(0).setDepth(DEPTH_FOG).setVisible(false);
+    // 안개에서 지워낼(밝힐) 빛 이미지 — 그라데이션이라 경계가 부드럽다
+    this.coneLight = this.make.image({ key: 'lightCone', add: false }).setOrigin(this._coneOriginX, 0.5);
+    this.nearLight = this.make.image({ key: 'lightNear', add: false }).setOrigin(0.5, 0.5);
+  }
+
+  // 캔버스로 가장자리가 흐린(블러+그라데이션) 빛 텍스처 생성
+  _makeLightTextures() {
+    const pad = 48;
+    // 부채꼴 빛: 꼭짓점이 왼쪽-중앙, +x 방향으로 펼쳐짐
+    const R = CONE_R;
+    const w = R + pad * 2;
+    const h = R * 2 + pad * 2;
+    const ax = pad, ay = h / 2;
+    this._coneOriginX = ax / w; // 이미지 원점을 꼭짓점에 맞춤
+    if (!this.textures.exists('lightCone')) {
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      const ctx = c.getContext('2d');
+      ctx.filter = `blur(${Math.round(R * 0.05)}px)`; // 경계 흐리게
+      const grad = ctx.createRadialGradient(ax, ay, R * 0.12, ax, ay, R);
+      grad.addColorStop(0, 'rgba(255,255,255,1)');
+      grad.addColorStop(0.55, 'rgba(255,255,255,0.96)');
+      grad.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.arc(ax, ay, R, -CONE_HALF, CONE_HALF);
+      ctx.closePath();
+      ctx.fill();
+      this.textures.addCanvas('lightCone', c);
+    }
+    // 근접 원 빛(발밑 항상 밝힘)
+    if (!this.textures.exists('lightNear')) {
+      const r = NEAR_R + 24;
+      const d = r * 2;
+      const c = document.createElement('canvas');
+      c.width = d; c.height = d;
+      const ctx = c.getContext('2d');
+      const grad = ctx.createRadialGradient(r, r, r * 0.45, r, r, r);
+      grad.addColorStop(0, 'rgba(255,255,255,1)');
+      grad.addColorStop(0.7, 'rgba(255,255,255,1)');
+      grad.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, d, d);
+      this.textures.addCanvas('lightNear', c);
+    }
+  }
+
+  _onResize(gameSize) {
+    if (this.fog && gameSize.width > 0 && gameSize.height > 0) {
+      this.fog.resize(gameSize.width, gameSize.height);
+    }
+  }
+
+  _updateVision(local) {
+    const cam = this.cameras.main;
+    const sx = local.x - cam.scrollX;
+    const sy = local.y - VIS_OFFY - cam.scrollY;
+
+    // 가장자리가 흐린 빛 이미지를 안개에서 지워낸다(부드러운 경계)
+    this.coneLight.setPosition(sx, sy).setRotation(this.facingAngle);
+    this.nearLight.setPosition(sx, sy);
+
+    this.fog.clear();
+    this.fog.fill(0x05060a, 0.99);
+    this.fog.erase(this.coneLight);
+    this.fog.erase(this.nearLight);
+
+    // 부채꼴 밖이라도 플레이어를 숨기지 않는다 → 안개 어둠만으로 가림
+    // (가까이 가면 나타나고 멀어지면 사라지는 '깜빡임 단서'를 없애 더 어렵게)
+    // 술래는 남의 명찰/그림자는 안 보이게 한다.
+    this.players.forEach((p, id) => {
+      if (id === this.myId) return;
+      p.shadow.setVisible(false);
+      p.label.setVisible(false);
+    });
+  }
+
+  // ===========================================================================
+  // [2단계] 캐릭터 위 그리기
+  // ===========================================================================
+  // E(꺼내기): 고양이가 캔버스 꺼내는 애니 → 끝나면 holding(들고 멈춤) 또는 drawing(편집)
+  _takeOut(intent) {
+    const me = this.players.get(this.myId);
+    if (!me || this.drawState !== 'closed') return;
+    this.openIntent = intent;
+    this.drawState = 'opening';
+    me.z = 0; me.zVel = 0; // 점프 중 진입해도 바닥에서
+
+    me.currentAnim = 'cat_canvas';
+    me.body.play('cat_canvas');
+    me.body.once(Phaser.Animations.Events.ANIMATION_COMPLETE, () => {
+      if (this.drawState !== 'opening') return;
+      if (this.openIntent === 'draw') this._openEditor();
+      else this.drawState = 'holding'; // 마지막 프레임 고정(멈춤)
+    });
+  }
+
+  // E(집어넣기): 캔버스 집어넣는 애니(역재생) → 끝나면 이동 가능
+  _putAway() {
+    const me = this.players.get(this.myId);
+    if (!me || this.drawState !== 'holding') return;
+    this.drawState = 'closing';
+    me.currentAnim = 'cat_canvas';
+    me.body.playReverse('cat_canvas');
+    me.body.once(Phaser.Animations.Events.ANIMATION_COMPLETE, () => {
+      if (this.drawState !== 'closing') return;
+      this.drawState = 'closed';
+      me.currentAnim = null; // 다음 프레임에 이동 애니로 복귀
+    });
+  }
+
+  // Q(그리기): 캔버스에 그리는 편집 모드(줌인). holding 상태에서 진입.
+  _openEditor() {
+    const me = this.players.get(this.myId);
+    if (!me) return;
+    this.drawState = 'drawing';
+    this.cameras.main.zoomTo(DRAW_ZOOM, 220);
+    this.board.show();
+    this.board.loadFromDataURL(me.skinDataURL || null); // 기존 그림 불러와 편집/지우기
+    this.drawGfx.setVisible(true);
+  }
+
+  // 편집 종료 공통: 줌아웃하고 holding(들고 멈춤)으로 복귀
+  _exitEditor() {
+    this.board.hide();
+    this.drawGfx.setVisible(false).clear();
+    this.cameras.main.zoomTo(1, 220);
+    this.drawState = 'holding';
+  }
+
+  // 적용(Q/적용버튼): 그림 반영 후 holding 으로
+  _applyAndHold() {
+    if (this.drawState !== 'drawing') return;
+    const dataURL = this.board.hasAnyPaint() ? this.board.toDataURL() : null;
+    this.applyDrawing(this.myId, dataURL);
+    if (this.socket) this.socket.emit('draw', { dataURL });
+    this._exitEditor();
+  }
+
+  // 취소(닫기버튼): 적용 없이 holding 으로
+  _cancelToHold() {
+    if (this.drawState !== 'drawing') return;
+    this._exitEditor();
+  }
+
+  // 그림 영역 = 캐릭터 몸통 크기(DRAW_REGION) 정사각, 중심 (x, y-REGION_CY)
+  _drawRegion(me) {
+    const size = DRAW_REGION;
+    const left = me.x - size / 2;
+    const top = me.y - REGION_CY - size / 2;
+    return { left, top, size, cell: size / this.board.GRID };
+  }
+
+  // 포인터 → 셀. 그림 영역 밖이면 무시 → "캐릭터 위에만" 칠해짐
+  // 직전 셀과 현재 셀 사이를 보간해서, 빠르게 움직여도 끊기지 않고 선으로 이어 칠한다.
+  _paintPointer(ptr) {
+    const me = this.players.get(this.myId);
+    if (!me) return;
+    const { left, top, cell } = this._drawRegion(me);
+    const cx = Math.floor((ptr.worldX - left) / cell);
+    const cy = Math.floor((ptr.worldY - top) / cell);
+    const erase = ptr.rightButtonDown();
+
+    const prev = this._lastCell;
+    if (prev && (prev.cx !== cx || prev.cy !== cy)) {
+      const dx = cx - prev.cx;
+      const dy = cy - prev.cy;
+      const steps = Math.max(Math.abs(dx), Math.abs(dy));
+      for (let i = 1; i <= steps; i++) {
+        this._paintCell(Math.round(prev.cx + (dx * i) / steps), Math.round(prev.cy + (dy * i) / steps), erase);
+      }
+    } else {
+      this._paintCell(cx, cy, erase);
+    }
+    this._lastCell = { cx, cy }; // 영역 밖이어도 추적(다음 보간 연속성)
+  }
+
+  _paintCell(cx, cy, erase) {
+    if (cx < 0 || cy < 0 || cx >= this.board.GRID || cy >= this.board.GRID) return;
+    this.board.paint(cx, cy, erase);
+  }
+
+  // 그리기 모드에서 캐릭터 위에 격자/칠한 셀/테두리 표시
+  _renderDrawOverlay(me) {
+    const g = this.drawGfx;
+    const { left, top, size, cell } = this._drawRegion(me);
+    const GRID = this.board.GRID;
+    const lw = 1 / this.cameras.main.zoom; // 줌과 무관하게 화면상 ~1px 선
+    g.clear();
+    g.fillStyle(0x000000, 0.2);
+    g.fillRect(left, top, size, size);
+    // 칠한 셀
+    for (let y = 0; y < GRID; y++) {
+      for (let x = 0; x < GRID; x++) {
+        const c = this.board.cells[y][x];
+        if (!c) continue;
+        g.fillStyle(parseInt(c.slice(1), 16), 1);
+        g.fillRect(left + x * cell, top + y * cell, cell, cell);
+      }
+    }
+    // 격자선
+    g.lineStyle(lw, 0xffffff, 0.18);
+    for (let i = 0; i <= GRID; i++) {
+      g.lineBetween(left + i * cell, top, left + i * cell, top + size);
+      g.lineBetween(left, top + i * cell, left + size, top + i * cell);
+    }
+    // 테두리(그릴 수 있는 영역 표시)
+    g.lineStyle(lw * 2, 0xffe27a, 0.95);
+    g.strokeRect(left, top, size, size);
+  }
+
+  // ===========================================================================
+  // [3단계] 네트워크
+  // ===========================================================================
+  _setupNetwork() {
+    const socket = io();
+    this.socket = socket;
+    const params = new URLSearchParams(location.search);
+    const roomId = params.get('room') || 'lobby';
+
+    socket.on('connect', () => socket.emit('joinRoom', { roomId }));
+
+    socket.on('init', ({ id, role, world, players }) => {
+      this.myId = id;
+      this.myRole = role;
+      if (world) this.world = world;
+      players.forEach((p) => this._addPlayer(p));
+      this._updateRoleBadge();
+      if (role === 'seeker') this.fog.setVisible(true);
+    });
+
+    socket.on('playerJoined', (p) => this._addPlayer(p));
+
+    socket.on('playerMoved', ({ id, x, y, angle, z, anim, flip, holding }) => {
+      const p = this.players.get(id);
+      if (!p) return;
+      p.target.x = x;
+      p.target.y = y;
+      p.angle = angle;
+      p.z = z || 0;
+      if (typeof flip === 'boolean') p.facingLeft = flip;
+      if (anim) p.anim = anim;
+      p.holding = !!holding;
+      p.lastMove = this.time.now;
+    });
+
+    socket.on('playerDrew', ({ id, dataURL }) => this.applyDrawing(id, dataURL));
+    socket.on('playerWhistled', ({ id, x, y }) => this._onWhistle(id, x, y));
+
+    socket.on('playerLeft', ({ id }) => {
+      const p = this.players.get(id);
+      if (!p) return;
+      p.body.destroy();
+      p.skin.destroy();
+      p.shadow.destroy();
+      p.label.destroy();
+      this.players.delete(id);
+    });
+  }
+
+  _addPlayer(info) {
+    if (this.players.has(info.id)) return;
+
+    const shadow = this.add.ellipse(info.x, info.y, SHADOW_W, SHADOW_H, 0x000000, 0.35).setDepth(DEPTH_SHADOW);
+
+    const body = this.add.sprite(info.x, info.y, 'cat_idle', 0)
+      .setOrigin(0.5, 1)
+      .setDisplaySize(CAT_DH, CAT_DH);
+    body.play('cat_idle');
+
+    // 위장 그림 오버레이: 고양이 몸통 위치에 덧입힌다(중심 기준). 그림 없으면 숨김.
+    const skin = this.add.image(info.x, info.y, 'cat_idle')
+      .setOrigin(0.5, 0.5)
+      .setDisplaySize(DRAW_REGION, DRAW_REGION)
+      .setVisible(false);
+
+    const isMe = info.id === this.myId;
+    const label = this.add.text(0, 0, isMe ? '나' : info.name, {
+      fontFamily: 'monospace', fontSize: '16px',
+      color: isMe ? '#ffd83b' : '#e7e9ee', // 나만 노란색
+      backgroundColor: 'rgba(0,0,0,0.4)', padding: { x: 5, y: 2 },
+    }).setOrigin(0.5);
+
+    const p = {
+      id: info.id, role: info.role, name: info.name,
+      shadow, body, skin, label,
+      x: info.x, y: info.y,
+      target: { x: info.x, y: info.y },
+      angle: info.angle || 0,
+      z: 0, zVel: 0,
+      facingLeft: false,
+      anim: 'cat_idle',
+      localAnim: 'cat_idle',
+      currentAnim: null,
+      lastMove: 0,
+      holding: !!info.holding,
+      hasDrawing: false,
+      skinDataURL: null,
+    };
+    this.players.set(info.id, p);
+
+    if (info.dataURL) this.applyDrawing(info.id, info.dataURL);
+  }
+
+  _updateRoleBadge() {
+    const badge = document.getElementById('role-badge');
+    if (!badge) return;
+    if (this.myRole === 'seeker') {
+      badge.textContent = '🔦 술래 (SEEKER) — 부채꼴 시야로 찾아라';
+      badge.className = 'seeker';
+    } else {
+      badge.textContent = '🫥 숨는이 (HIDER) — 위장하고 숨어라';
+      badge.className = 'hider';
+    }
+  }
+
+  // 고양이는 항상 애니메이션(본체로 늘 존재)
+  _setAnim(p, key) {
+    if (!key || p.currentAnim === key) return;
+    p.currentAnim = key;
+    p.body.play(key, true);
+  }
+
+  // [2단계] 위장 그림 → 고양이 위 오버레이(skin). null 이면 오버레이 제거(고양이만 남음)
+  applyDrawing(id, dataURL) {
+    const p = this.players.get(id);
+    if (!p) return;
+    p.skinDataURL = dataURL || null;
+
+    if (!dataURL) {
+      // 빈 그림 → 그림만 제거, 고양이는 그대로 존재
+      p.hasDrawing = false;
+      if (p.skin) p.skin.setVisible(false);
+      return;
+    }
+
+    const key = 'body_' + id;
+    const img = new Image();
+    img.onload = () => {
+      if (this.textures.exists(key)) this.textures.remove(key);
+      this.textures.addImage(key, img);
+      p.skin.setTexture(key);
+      p.skin.setOrigin(0.5, 0.5);
+      p.skin.setDisplaySize(DRAW_REGION, DRAW_REGION);
+      p.hasDrawing = true;
+      p.skin.setVisible(true);
+    };
+    img.src = dataURL;
+  }
+
+  // ===========================================================================
+  // [5단계] 휘파람 (E)
+  // ===========================================================================
+  _ensureAudio() {
+    if (!this.audioCtx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      this.audioCtx = new AC();
+    }
+    if (this.audioCtx.state === 'suspended') this.audioCtx.resume();
+  }
+
+  _playWhistle() {
+    this._ensureAudio();
+    const ctx = this.audioCtx;
+    const t = ctx.currentTime;
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(900, t);
+    o.frequency.exponentialRampToValueAtTime(1750, t + 0.14);
+    o.frequency.exponentialRampToValueAtTime(1150, t + 0.30);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.25, t + 0.03);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.42);
+    o.connect(g); g.connect(ctx.destination);
+    o.start(t); o.stop(t + 0.45);
+  }
+
+  _onWhistle(id, x, y) {
+    const me = this.players.get(this.myId);
+    if (!me) return;
+    if (Phaser.Math.Distance.Between(me.x, me.y, x, y) > WHISTLE_R) return;
+    this._playWhistle();
+    this._popEmoji(x, y, '🎵');
+  }
+
+  _popEmoji(x, y, emoji) {
+    const txt = this.add.text(x, y - CAT_DH, emoji, { fontSize: '28px' })
+      .setOrigin(0.5).setDepth(DEPTH_EMOJI);
+    this.tweens.add({
+      targets: txt, y: y - CAT_DH - 50, alpha: { from: 1, to: 0 },
+      duration: 1100, ease: 'Cubic.easeOut', onComplete: () => txt.destroy(),
+    });
+  }
+
+  // ===========================================================================
+  // 메인 루프
+  // ===========================================================================
+  update(time, delta) {
+    const me = this.players.get(this.myId);
+    const dt = delta / 1000;
+
+    // [1단계] 이동 + 점프
+    //   closed  : 평소 속도, 점프 가능
+    //   holding : 캔버스 든 채 아주 느리게 이동(점프 불가, 캔버스 포즈 유지)
+    if (me && (this.drawState === 'closed' || this.drawState === 'holding')) {
+      const holding = this.drawState === 'holding';
+      const speed = holding ? HOLD_SPEED : SPEED;
+      let vx = 0, vy = 0;
+      if (this.keys.a.isDown) vx -= 1;
+      if (this.keys.d.isDown) vx += 1;
+      if (this.keys.w.isDown) vy -= 1;
+      if (this.keys.s.isDown) vy += 1;
+      const moving = vx !== 0 || vy !== 0;
+
+      if (moving) {
+        const len = Math.hypot(vx, vy);
+        me.x = Phaser.Math.Clamp(me.x + (vx / len) * speed * dt, 30, this.world.width - 30);
+        me.y = Phaser.Math.Clamp(me.y + (vy / len) * speed * dt, 40, this.world.height - 10);
+        if (vx < 0) me.facingLeft = true;
+        else if (vx > 0) me.facingLeft = false;
+      }
+
+      // 점프/이동 애니는 평소(closed)에만 — 캔버스 들고는 점프 불가 + 캔버스 포즈 유지
+      if (!holding) {
+        if (Phaser.Input.Keyboard.JustDown(this.keys.space) && me.z === 0) {
+          me.zVel = JUMP_VEL;
+        }
+        if (me.z > 0 || me.zVel > 0) {
+          me.z += me.zVel * dt;
+          me.zVel -= GRAVITY * dt;
+          if (me.z <= 0) { me.z = 0; me.zVel = 0; }
+        }
+        if (me.z > 0) me.localAnim = me.zVel > 0 ? 'cat_jump' : 'cat_fall';
+        else me.localAnim = moving ? 'cat_run' : 'cat_idle';
+      }
+
+      const ptr = this.input.activePointer;
+      this.facingAngle = Phaser.Math.Angle.Between(me.x, me.y - VIS_OFFY, ptr.worldX, ptr.worldY);
+    }
+
+    // [2단계] 키 입력
+    //  E = 캔버스 꺼내기/집어넣기 (opening/closing 중엔 무시 → 연타 방지)
+    if (Phaser.Input.Keyboard.JustDown(this.keys.e)) {
+      if (this.drawState === 'closed') this._takeOut('hold');
+      else if (this.drawState === 'holding') this._putAway();
+    }
+    //  Q = 캔버스에 그리기(편집). closed면 먼저 꺼낸 뒤 편집, drawing이면 적용
+    if (Phaser.Input.Keyboard.JustDown(this.keys.q)) {
+      if (this.drawState === 'closed') this._takeOut('draw');
+      else if (this.drawState === 'holding') this._openEditor();
+      else if (this.drawState === 'drawing') this._applyAndHold();
+    }
+    //  R = 휘파람 (이동/들고있을 때만)
+    if (Phaser.Input.Keyboard.JustDown(this.keys.r) && me) {
+      if (this.drawState === 'closed' || this.drawState === 'holding') {
+        this._ensureAudio();
+        if (this.socket) this.socket.emit('whistle', { x: Math.round(me.x), y: Math.round(me.y) });
+      }
+    }
+
+    // 상태 동기화(약 20Hz): 위치/높이/애니/방향 + 캔버스 들고있음 여부
+    if (me && this.socket && time - this.lastSent > 50) {
+      this.lastSent = time;
+      const holding = this.drawState === 'holding' || this.drawState === 'drawing';
+      const anim = this.drawState === 'closed' ? me.localAnim : 'cat_canvas';
+      this.socket.emit('move', {
+        x: Math.round(me.x), y: Math.round(me.y), angle: this.facingAngle,
+        z: Math.round(me.z), anim, flip: me.facingLeft, holding,
+      });
+    }
+
+    // ★ 2.5D 렌더
+    this.players.forEach((p, id) => {
+      if (id !== this.myId) {
+        p.x = Phaser.Math.Linear(p.x, p.target.x, 0.25);
+        p.y = Phaser.Math.Linear(p.y, p.target.y, 0.25);
+        if (p.holding) {
+          // 캔버스 들고 멈춤: 캔버스 애니 1회 재생 후 마지막 프레임 유지
+          if (p.currentAnim !== 'cat_canvas') { p.currentAnim = 'cat_canvas'; p.body.play('cat_canvas'); }
+        } else {
+          this._setAnim(p, p.anim);
+        }
+      } else if (this.drawState === 'closed') {
+        // 캔버스 세션 중엔 _takeOut/_putAway 가 body 애니를 직접 제어 → 덮어쓰기 금지
+        this._setAnim(p, p.localAnim);
+      }
+
+      const off = p.z || 0;
+      p.body.x = p.x;
+      p.body.y = p.y - off;
+      // 캔버스를 든/그리는 동안엔 본체도 뒤집지 않음 → 그림과 항상 같은 방향
+      const inCanvas = id === this.myId ? this.drawState !== 'closed' : p.holding;
+      p.body.setFlipX(inCanvas ? false : p.facingLeft);
+      p.body.setDepth(p.y);
+
+      // 위장 그림 오버레이: 몸통 중심에 맞춤(중심 기준), 살짝 위 depth
+      p.skin.x = p.x;
+      p.skin.y = p.y - REGION_CY - off;
+      p.skin.setFlipX(false); // 그림은 항상 같은 방향(캐릭터 방향 따라 좌우 전환 안 함)
+      p.skin.setDepth(p.y + 0.05);
+      // 그림은 "캔버스를 들고 있을 때만" 보인다 (달릴 땐 안 보임)
+      const holdingShown = id === this.myId ? this.drawState === 'holding' : p.holding;
+      p.skin.setVisible(holdingShown && p.hasDrawing);
+
+      // 그림자: 실제 발에서 아래로 살짝 띄움
+      p.shadow.x = p.x; p.shadow.y = p.y - FEET_OFF + 12;
+      p.shadow.setScale(Phaser.Math.Clamp(1 - off * 0.012, 0.45, 1));
+
+      // 명찰: 실제 머리 위로 띄움
+      p.label.x = p.x;
+      p.label.y = p.y - HEAD_OFF - 20 - off;
+      p.label.setDepth(p.y + 0.1);
+    });
+
+    if (me) this.cameraTarget.setPosition(me.x, me.y - VIS_OFFY);
+
+    // [2단계] 그리기 오버레이(캐릭터 위 격자) — 'drawing' 상태에서만
+    if (this.drawState === 'drawing' && me) {
+      this._renderDrawOverlay(me);
+    }
+
+    // [4단계] 술래 시야 — 줌인 편집(drawing)만 제외하고 항상 유지(캔버스 들어도 시야 안 풀림)
+    if (this.myRole === 'seeker' && me && this.drawState !== 'drawing') {
+      this._updateVision(me);
+    }
+  }
+}

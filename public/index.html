@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>imjustawall - 그려서 숨는 숨바꼭질</title>
+  <link rel="stylesheet" href="style.css" />
+  <!-- Phaser 3 (CDN) -->
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+  <!-- Socket.io client (서버가 자동으로 서빙) -->
+  <script src="/socket.io/socket.io.js"></script>
+</head>
+<body>
+  <!-- Phaser 캔버스가 들어갈 컨테이너 -->
+  <div id="game-root"></div>
+
+  <!-- 조작 안내 HUD -->
+  <div id="hud">
+    <div class="hud-row"><b>WASD</b> 이동</div>
+    <div class="hud-row"><b>E</b> 캔버스 꺼내기/넣기 (들면 멈춤·위장)</div>
+    <div class="hud-row"><b>Q</b> 캔버스에 그리기</div>
+    <div class="hud-row"><b>R</b> 휘파람</div>
+    <div class="hud-row"><b>Space</b> 점프</div>
+    <div class="hud-row"><b>마우스</b> 술래 시야 방향</div>
+  </div>
+
+  <!-- 역할 표시 -->
+  <div id="role-badge">접속 중...</div>
+
+  <!-- =====================================================================
+       [2단계] 위장 그리기 도구막대 (인게임 캐릭터 페인팅)
+       Q 를 누르면 카메라가 캐릭터로 줌인되고, 캐릭터 위 격자에 직접 칠한다.
+       이 막대는 색/브러시 선택과 적용/닫기 버튼만 담당한다.
+  ====================================================================== -->
+  <div id="paint-toolbar" class="hidden">
+    <span class="pt-title">🎨 캐릭터 위에 그리기</span>
+    <div class="palette" id="palette"></div>
+    <label class="pt-brush">브러시
+      <input id="brush-size" type="range" min="1" max="4" value="1" />
+    </label>
+    <button id="btn-clear" class="paint-btn">지우기</button>
+    <button id="btn-apply" class="paint-btn primary">적용 (Q)</button>
+    <button id="btn-close" class="paint-btn">취소</button>
+    <span class="pt-hint">캐릭터 위에 드래그 · 우클릭=지우개</span>
+  </div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
