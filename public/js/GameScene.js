@@ -20,11 +20,16 @@ const CONE_R = 540;       // 시야 거리(훨씬 멀리)
 const NEAR_R = 130;       // 술래 주변 항상 보이는 반경 — 커진 캐릭터를 안 가리게
 const WHISTLE_R = 420;
 const ROLE_COLOR = { seeker: 0xff5a5a, hider: 0x5fe08a };
+const HIDER_SETS = ['gray', 'lemon', 'orange']; // 숨는이 색 세트(랜덤 배정)
 
 // 표시 규격 (캐릭터 96 → 144, 약 1.5배)
 const CAT_DH = 144;               // 고양이 표시 크기(정사각, origin 하단중심)
+const SEEKER_SCALE = 1.25;        // 술래는 숨는이보다 조금 큼
 const DRAW_REGION = 84;           // 위장 그림(=그리기 격자) 크기 — 캐릭터 몸통 크기에 맞춤
 const REGION_CY = 63;             // 그림 영역 중심 높이(발에서 위로) — 고양이/캔버스 몸통 위치
+const SEEKER_REGION = 70;         // 술래 꾸미기 영역 폭
+const SEEKER_REGION_H = 118;      // 술래 꾸미기 영역 높이(세로로 길게)
+const SEEKER_REGION_CY = 71;      // 술래 꾸미기 영역 중심(몸통보다 살짝 위 — 상의)
 const SHADOW_W = 81, SHADOW_H = 30;
 const VIS_OFFY = 66;              // 시야/카메라 원점 높이(발 → 몸통 중앙)
 const DRAW_ZOOM = 4;             // 그리기 모드 카메라 줌(작은 영역을 크게 보이게)
@@ -47,13 +52,23 @@ export class GameScene extends Phaser.Scene {
   }
 
   preload() {
-    const P = 'character/SEEKER/';
-    this.load.spritesheet('cat_idle', P + '1_Cat_Idle-Sheet.png', { frameWidth: 32, frameHeight: 32 });
-    this.load.spritesheet('cat_run', P + '2_Cat_Run-Sheet.png', { frameWidth: 32, frameHeight: 32 });
-    this.load.spritesheet('cat_jump', P + '3_Cat_Jump-Sheet.png', { frameWidth: 32, frameHeight: 32 });
-    this.load.spritesheet('cat_fall', P + '4_Cat_Fall-Sheet.png', { frameWidth: 32, frameHeight: 32 });
-    this.load.spritesheet('cat_canvas', P + '5_Cat_Canvas-Sheet.png', { frameWidth: 32, frameHeight: 32 });
-    this.load.spritesheet('seeker_run', P + '6_Cat_seekermoving-Sheet.png', { frameWidth: 32, frameHeight: 32 });
+    const F = { frameWidth: 32, frameHeight: 32 };
+    // 술래: SEEKER 폴더 (걸음 = 6_seekermoving)
+    const S = 'character/SEEKER/';
+    this.load.spritesheet('seeker_idle', S + '1_Cat_Idle-Sheet.png', F);
+    this.load.spritesheet('seeker_run', S + '6_Cat_seekermoving-Sheet.png', F);
+    this.load.spritesheet('seeker_jump', S + '3_Cat_Jump-Sheet.png', F);
+    this.load.spritesheet('seeker_fall', S + '4_Cat_Fall-Sheet.png', F);
+    this.load.spritesheet('seeker_canvas', S + '5_Cat_Canvas-Sheet.png', F);
+    // 숨는이: HIDER/<색> 3종(gray/lemon/orange), 구조 동일
+    HIDER_SETS.forEach((c) => {
+      const H = 'character/HIDER/' + c + '/';
+      this.load.spritesheet(c + '_idle', H + '1_Cat_Idle-Sheet.png', F);
+      this.load.spritesheet(c + '_run', H + '2_Cat_Run-Sheet.png', F);
+      this.load.spritesheet(c + '_jump', H + '3_Cat_Jump-Sheet.png', F);
+      this.load.spritesheet(c + '_fall', H + '4_Cat_Fall-Sheet.png', F);
+      this.load.spritesheet(c + '_canvas', H + '5_Cat_Canvas-Sheet.png', F);
+    });
   }
 
   create() {
@@ -140,13 +155,23 @@ export class GameScene extends Phaser.Scene {
   // ===========================================================================
   _makeAnims() {
     const A = this.anims;
-    if (!A.exists('cat_idle')) A.create({ key: 'cat_idle', frames: A.generateFrameNumbers('cat_idle', { start: 0, end: 7 }), frameRate: 8, repeat: -1 });
-    if (!A.exists('cat_run')) A.create({ key: 'cat_run', frames: A.generateFrameNumbers('cat_run', { start: 0, end: 9 }), frameRate: 16, repeat: -1 });
-    if (!A.exists('seeker_run')) A.create({ key: 'seeker_run', frames: A.generateFrameNumbers('seeker_run', { start: 0, end: 7 }), frameRate: 14, repeat: -1 }); // 술래 걸음
-    if (!A.exists('cat_jump')) A.create({ key: 'cat_jump', frames: A.generateFrameNumbers('cat_jump', { start: 0, end: 3 }), frameRate: 12, repeat: 0 });
-    if (!A.exists('cat_fall')) A.create({ key: 'cat_fall', frames: A.generateFrameNumbers('cat_fall', { start: 0, end: 3 }), frameRate: 12, repeat: 0 });
-    // 캔버스 꺼내기(그리기 진입). 한 번만 재생하고 마지막 프레임(캔버스) 유지
-    if (!A.exists('cat_canvas')) A.create({ key: 'cat_canvas', frames: A.generateFrameNumbers('cat_canvas', { start: 0, end: 3 }), frameRate: 9, repeat: 0 });
+    const mk = (key, end, fr, rep) => {
+      if (!A.exists(key)) A.create({ key, frames: A.generateFrameNumbers(key, { start: 0, end }), frameRate: fr, repeat: rep });
+    };
+    // 술래 세트 (run = seekermoving 8프레임)
+    mk('seeker_idle', 7, 8, -1);
+    mk('seeker_run', 7, 14, -1);
+    mk('seeker_jump', 3, 12, 0);
+    mk('seeker_fall', 3, 12, 0);
+    mk('seeker_canvas', 3, 9, 0);
+    // 숨는이 색 세트 (run = 2_Run 10프레임)
+    HIDER_SETS.forEach((c) => {
+      mk(c + '_idle', 7, 8, -1);
+      mk(c + '_run', 9, 16, -1);
+      mk(c + '_jump', 3, 12, 0);
+      mk(c + '_fall', 3, 12, 0);
+      mk(c + '_canvas', 3, 9, 0);
+    });
   }
 
   _makePropTextures() {
@@ -269,7 +294,7 @@ export class GameScene extends Phaser.Scene {
   _updateVision(local) {
     const cam = this.cameras.main;
     const sx = local.x - cam.scrollX;
-    const sy = local.y - VIS_OFFY - cam.scrollY;
+    const sy = local.y - VIS_OFFY * local.scale - cam.scrollY;
 
     // 가장자리가 흐린 빛 이미지를 안개에서 지워낸다(부드러운 경계)
     this.coneLight.setPosition(sx, sy).setRotation(this.facingAngle);
@@ -301,8 +326,8 @@ export class GameScene extends Phaser.Scene {
     this.drawState = 'opening';
     me.z = 0; me.zVel = 0; // 점프 중 진입해도 바닥에서
 
-    me.currentAnim = 'cat_canvas';
-    me.body.play('cat_canvas');
+    me.currentAnim = 'canvas';
+    me.body.play(me.set + '_canvas');
     me.body.once(Phaser.Animations.Events.ANIMATION_COMPLETE, () => {
       if (this.drawState !== 'opening') return;
       if (this.openIntent === 'draw') this._openEditor();
@@ -315,8 +340,8 @@ export class GameScene extends Phaser.Scene {
     const me = this.players.get(this.myId);
     if (!me || this.drawState !== 'holding') return;
     this.drawState = 'closing';
-    me.currentAnim = 'cat_canvas';
-    me.body.playReverse('cat_canvas');
+    me.currentAnim = 'canvas';
+    me.body.playReverse(me.set + '_canvas');
     me.body.once(Phaser.Animations.Events.ANIMATION_COMPLETE, () => {
       if (this.drawState !== 'closing') return;
       this.drawState = 'closed';
@@ -330,10 +355,14 @@ export class GameScene extends Phaser.Scene {
     if (!me) return;
     if (this.myRole === 'seeker') {
       me.z = 0; me.zVel = 0;            // 점프 중 진입해도 바닥에서
-      me.currentAnim = 'cat_idle';      // 꾸미는 동안 차분한 기본 포즈(캐릭터 위에 그림)
-      me.body.play('cat_idle');
+      me.currentAnim = 'idle';      // 꾸미는 동안 차분한 기본 포즈(캐릭터 위에 그림)
+      me.body.play(me.set + '_idle');
     }
     this.drawState = 'drawing';
+    // 영역 비율에 맞춰 격자 칸수 설정 → 칸이 정사각(폭 32칸 기준, 높이는 비율만큼)
+    const cols = 32;
+    const rows = Math.max(8, Math.round(cols * me.regionH / me.regionW));
+    this.board.setGrid(cols, rows);
     this.cameras.main.zoomTo(DRAW_ZOOM, 220);
     this.board.show();
     this.board.loadFromDataURL(me.skinDataURL || null); // 기존 그림 불러와 편집/지우기
@@ -370,12 +399,14 @@ export class GameScene extends Phaser.Scene {
     this._exitEditor();
   }
 
-  // 그림 영역 = 캐릭터 몸통 크기(DRAW_REGION) 정사각, 중심 (x, y-REGION_CY)
+  // 그림 영역(폭 w × 높이 h), 중심 (x, y - regionCY). 32x32 격자 → cellW/cellH
   _drawRegion(me) {
-    const size = DRAW_REGION;
-    const left = me.x - size / 2;
-    const top = me.y - REGION_CY - size / 2;
-    return { left, top, size, cell: size / this.board.GRID };
+    const s = me.scale || 1;
+    const w = me.regionW * s;
+    const h = me.regionH * s;
+    const left = me.x - w / 2;
+    const top = me.y - me.regionCY * s - h / 2;
+    return { left, top, w, h, cellW: w / this.board.cols, cellH: h / this.board.rows };
   }
 
   // 포인터 → 셀. 그림 영역 밖이면 무시 → "캐릭터 위에만" 칠해짐
@@ -383,9 +414,9 @@ export class GameScene extends Phaser.Scene {
   _paintPointer(ptr) {
     const me = this.players.get(this.myId);
     if (!me) return;
-    const { left, top, cell } = this._drawRegion(me);
-    const cx = Math.floor((ptr.worldX - left) / cell);
-    const cy = Math.floor((ptr.worldY - top) / cell);
+    const { left, top, cellW, cellH } = this._drawRegion(me);
+    const cx = Math.floor((ptr.worldX - left) / cellW);
+    const cy = Math.floor((ptr.worldY - top) / cellH);
     const erase = ptr.rightButtonDown();
 
     const prev = this._lastCell;
@@ -403,7 +434,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   _paintCell(cx, cy, erase) {
-    if (cx < 0 || cy < 0 || cx >= this.board.GRID || cy >= this.board.GRID) return;
+    if (cx < 0 || cy < 0 || cx >= this.board.cols || cy >= this.board.rows) return;
     this.board.paint(cx, cy, erase);
     this._strokeDirty = true;
   }
@@ -423,11 +454,10 @@ export class GameScene extends Phaser.Scene {
     if (!me) return;
     const cam = this.cameras.main;
     const ptr = this.input.activePointer;
-    const GRID = this.board.GRID;
-    const { left, top, cell } = this._drawRegion(me);
-    const cx = Math.floor((ptr.worldX - left) / cell);
-    const cy = Math.floor((ptr.worldY - top) / cell);
-    const inGrid = cx >= 0 && cy >= 0 && cx < GRID && cy < GRID;
+    const { left, top, cellW, cellH } = this._drawRegion(me);
+    const cx = Math.floor((ptr.worldX - left) / cellW);
+    const cy = Math.floor((ptr.worldY - top) / cellH);
+    const inGrid = cx >= 0 && cy >= 0 && cx < this.board.cols && cy < this.board.rows;
 
     // 1) 칠해진 칸 → 정확한 색 즉시
     if (inGrid && this.board.cells[cy][cx]) {
@@ -440,8 +470,8 @@ export class GameScene extends Phaser.Scene {
     if (!r || !r.snapshotPixel) return;
     let px = ptr.x, py = ptr.y;
     if (inGrid) {
-      const wx = left + (cx + 0.5) * cell;
-      const wy = top + (cy + 0.5) * cell;
+      const wx = left + (cx + 0.5) * cellW;
+      const wy = top + (cy + 0.5) * cellH;
       px = (wx - cam.worldView.x) * cam.zoom;
       py = (wy - cam.worldView.y) * cam.zoom;
     }
@@ -455,45 +485,43 @@ export class GameScene extends Phaser.Scene {
   // 그리기 모드에서 캐릭터 위에 격자/칠한 셀/테두리 표시
   _renderDrawOverlay(me) {
     const g = this.drawGfx;
-    const { left, top, size, cell } = this._drawRegion(me);
-    const GRID = this.board.GRID;
+    const { left, top, w, h, cellW, cellH } = this._drawRegion(me);
+    const COLS = this.board.cols, ROWS = this.board.rows;
     const lw = 1 / this.cameras.main.zoom; // 줌과 무관하게 화면상 ~1px 선
     g.clear();
     // (검은 반투명 배경 제거 — 캐릭터 색이 어두워져 스포이드가 틀린 색을 뽑던 원인)
     // 칠한 셀
-    for (let y = 0; y < GRID; y++) {
-      for (let x = 0; x < GRID; x++) {
+    for (let y = 0; y < ROWS; y++) {
+      for (let x = 0; x < COLS; x++) {
         const c = this.board.cells[y][x];
         if (!c) continue;
         g.fillStyle(parseInt(c.slice(1), 16), 1);
-        g.fillRect(left + x * cell, top + y * cell, cell, cell);
+        g.fillRect(left + x * cellW, top + y * cellH, cellW, cellH);
       }
     }
     // 격자선 (더 투명하게)
     g.lineStyle(lw, 0xffffff, 0.08);
-    for (let i = 0; i <= GRID; i++) {
-      g.lineBetween(left + i * cell, top, left + i * cell, top + size);
-      g.lineBetween(left, top + i * cell, left + size, top + i * cell);
-    }
+    for (let i = 0; i <= COLS; i++) g.lineBetween(left + i * cellW, top, left + i * cellW, top + h);
+    for (let i = 0; i <= ROWS; i++) g.lineBetween(left, top + i * cellH, left + w, top + i * cellH);
     // 테두리(그릴 수 있는 영역 표시)
     g.lineStyle(lw * 2, 0xffe27a, 0.9);
-    g.strokeRect(left, top, size, size);
+    g.strokeRect(left, top, w, h);
 
     // 브러시 미리보기: 커서 위치에 칠해질 영역을 반투명으로
     // (스포이드 모드 또는 Space 추출 중엔 숨김 → 미리보기 색이 샘플에 섞이지 않게)
     if (!this._eyedropMode && !this.keys.space.isDown) {
       const ptr = this.input.activePointer;
-      const hx = Math.floor((ptr.worldX - left) / cell);
-      const hy = Math.floor((ptr.worldY - top) / cell);
-      if (hx >= 0 && hy >= 0 && hx < GRID && hy < GRID) {
+      const hx = Math.floor((ptr.worldX - left) / cellW);
+      const hy = Math.floor((ptr.worldY - top) / cellH);
+      if (hx >= 0 && hy >= 0 && hx < COLS && hy < ROWS) {
         g.fillStyle(parseInt(this.board.color.slice(1), 16), 0.5);
         for (const [dx, dy] of this.board.brushOffsets()) {
           const x = hx + dx, y = hy + dy;
-          if (x < 0 || y < 0 || x >= GRID || y >= GRID) continue;
-          g.fillRect(left + x * cell, top + y * cell, cell, cell);
+          if (x < 0 || y < 0 || x >= COLS || y >= ROWS) continue;
+          g.fillRect(left + x * cellW, top + y * cellH, cellW, cellH);
         }
         g.lineStyle(lw * 1.5, 0xffffff, 0.85); // 중심 칸 강조
-        g.strokeRect(left + hx * cell, top + hy * cell, cell, cell);
+        g.strokeRect(left + hx * cellW, top + hy * cellH, cellW, cellH);
       }
     }
   }
@@ -551,36 +579,48 @@ export class GameScene extends Phaser.Scene {
   _addPlayer(info) {
     if (this.players.has(info.id)) return;
 
-    const shadow = this.add.ellipse(info.x, info.y, SHADOW_W, SHADOW_H, 0x000000, 0.35).setDepth(DEPTH_SHADOW);
+    // 스프라이트 세트: 술래=seeker, 숨는이=gray/lemon/orange 중 (서버가 준 색 인덱스)
+    const set = info.role === 'seeker'
+      ? 'seeker'
+      : HIDER_SETS[(info.color || 0) % HIDER_SETS.length];
+    const isSeekerP = info.role === 'seeker';
+    const scale = isSeekerP ? SEEKER_SCALE : 1;             // 술래가 조금 더 큼
+    const regionW = isSeekerP ? SEEKER_REGION : DRAW_REGION;   // 술래 꾸미기 영역 폭
+    const regionH = isSeekerP ? SEEKER_REGION_H : DRAW_REGION; // 술래 꾸미기 영역 높이(세로로 김)
+    const regionCY = isSeekerP ? SEEKER_REGION_CY : REGION_CY;
 
-    const body = this.add.sprite(info.x, info.y, 'cat_idle', 0)
+    const shadow = this.add.ellipse(info.x, info.y, SHADOW_W * scale, SHADOW_H * scale, 0x000000, 0.35).setDepth(DEPTH_SHADOW);
+
+    const body = this.add.sprite(info.x, info.y, set + '_idle', 0)
       .setOrigin(0.5, 1)
-      .setDisplaySize(CAT_DH, CAT_DH);
-    body.play('cat_idle');
+      .setDisplaySize(CAT_DH * scale, CAT_DH * scale);
+    body.play(set + '_idle');
 
-    // 위장 그림 오버레이: 고양이 몸통 위치에 덧입힌다(중심 기준). 그림 없으면 숨김.
-    const skin = this.add.image(info.x, info.y, 'cat_idle')
+    // 위장/꾸미기 그림 오버레이. 그림 없으면 숨김.
+    const skin = this.add.image(info.x, info.y, set + '_idle')
       .setOrigin(0.5, 0.5)
-      .setDisplaySize(DRAW_REGION, DRAW_REGION)
+      .setDisplaySize(regionW * scale, regionH * scale)
       .setVisible(false);
 
     const isMe = info.id === this.myId;
     const label = this.add.text(0, 0, isMe ? '나' : info.name, {
       fontFamily: 'monospace', fontSize: '16px',
-      color: isMe ? '#ffd83b' : '#e7e9ee', // 나만 노란색
+      // 나=노랑, 술래(남이 볼 때)=빨강, 그 외=흰색
+      color: isMe ? '#ffd83b' : (isSeekerP ? '#ff5a5a' : '#e7e9ee'),
       backgroundColor: 'rgba(0,0,0,0.4)', padding: { x: 5, y: 2 },
     }).setOrigin(0.5);
 
     const p = {
       id: info.id, role: info.role, name: info.name,
+      set, scale, regionW, regionH, regionCY,
       shadow, body, skin, label,
       x: info.x, y: info.y,
       target: { x: info.x, y: info.y },
       angle: info.angle || 0,
       z: 0, zVel: 0,
       facingLeft: false,
-      anim: 'cat_idle',
-      localAnim: 'cat_idle',
+      anim: 'idle',        // 애니 상태값(idle/run/jump/fall/canvas) — 세트로 키 조합
+      localAnim: 'idle',
       currentAnim: null,
       lastMove: 0,
       holding: !!info.holding,
@@ -664,10 +704,10 @@ export class GameScene extends Phaser.Scene {
   }
 
   // 고양이는 항상 애니메이션(본체로 늘 존재)
-  _setAnim(p, key) {
-    if (!key || p.currentAnim === key) return;
-    p.currentAnim = key;
-    p.body.play(key, true);
+  _setAnim(p, state) {
+    if (!state || p.currentAnim === state) return;
+    p.currentAnim = state;
+    p.body.play(p.set + '_' + state, true);
   }
 
   // [2단계] 위장 그림 → 고양이 위 오버레이(skin). null 이면 오버레이 제거(고양이만 남음)
@@ -690,7 +730,7 @@ export class GameScene extends Phaser.Scene {
       this.textures.addImage(key, img);
       p.skin.setTexture(key);
       p.skin.setOrigin(0.5, 0.5);
-      p.skin.setDisplaySize(DRAW_REGION, DRAW_REGION);
+      p.skin.setDisplaySize(p.regionW * p.scale, p.regionH * p.scale);
       p.hasDrawing = true;
       p.skin.setVisible(true);
     };
@@ -780,13 +820,12 @@ export class GameScene extends Phaser.Scene {
           me.zVel -= GRAVITY * dt;
           if (me.z <= 0) { me.z = 0; me.zVel = 0; }
         }
-        if (me.z > 0) me.localAnim = me.zVel > 0 ? 'cat_jump' : 'cat_fall';
-        else if (moving) me.localAnim = this.myRole === 'seeker' ? 'seeker_run' : 'cat_run';
-        else me.localAnim = 'cat_idle';
+        if (me.z > 0) me.localAnim = me.zVel > 0 ? 'jump' : 'fall';
+        else me.localAnim = moving ? 'run' : 'idle'; // 세트가 술래(걸음)/숨는이 run 텍스처를 결정
       }
 
       const ptr = this.input.activePointer;
-      this.facingAngle = Phaser.Math.Angle.Between(me.x, me.y - VIS_OFFY, ptr.worldX, ptr.worldY);
+      this.facingAngle = Phaser.Math.Angle.Between(me.x, me.y - VIS_OFFY * me.scale, ptr.worldX, ptr.worldY);
     }
 
     // [2단계] 키 입력
@@ -841,10 +880,10 @@ export class GameScene extends Phaser.Scene {
       let holding, anim;
       if (this.myRole === 'seeker') {
         holding = false;
-        anim = this.drawState === 'closed' ? me.localAnim : 'cat_idle';
+        anim = this.drawState === 'closed' ? me.localAnim : 'idle';
       } else {
         holding = this.drawState === 'holding' || this.drawState === 'drawing';
-        anim = this.drawState === 'closed' ? me.localAnim : 'cat_canvas';
+        anim = this.drawState === 'closed' ? me.localAnim : 'canvas';
       }
       this.socket.emit('move', {
         x: Math.round(me.x), y: Math.round(me.y), angle: this.facingAngle,
@@ -858,8 +897,7 @@ export class GameScene extends Phaser.Scene {
         p.x = Phaser.Math.Linear(p.x, p.target.x, 0.25);
         p.y = Phaser.Math.Linear(p.y, p.target.y, 0.25);
         if (p.holding) {
-          // 캔버스 들고 멈춤: 캔버스 애니 1회 재생 후 마지막 프레임 유지
-          if (p.currentAnim !== 'cat_canvas') { p.currentAnim = 'cat_canvas'; p.body.play('cat_canvas'); }
+          this._setAnim(p, 'canvas'); // 캔버스 들고 멈춤(마지막 프레임 유지)
         } else {
           this._setAnim(p, p.anim);
         }
@@ -878,7 +916,7 @@ export class GameScene extends Phaser.Scene {
 
       // 그림 오버레이: 몸통 중심에 맞춤, 살짝 위 depth
       p.skin.x = p.x;
-      p.skin.y = p.y - REGION_CY - off;
+      p.skin.y = p.y - p.regionCY * p.scale - off;
       p.skin.setDepth(p.y + 0.05);
       if (p.role === 'seeker') {
         // 술래: 코스튬처럼 항상 표시 + 캐릭터와 함께 좌우반전 (편집 중인 본인은 숨김)
@@ -893,16 +931,16 @@ export class GameScene extends Phaser.Scene {
       }
 
       // 그림자: 실제 발에서 아래로 살짝 띄움
-      p.shadow.x = p.x; p.shadow.y = p.y - FEET_OFF + 12;
+      p.shadow.x = p.x; p.shadow.y = p.y - FEET_OFF * p.scale + 12;
       p.shadow.setScale(Phaser.Math.Clamp(1 - off * 0.012, 0.45, 1));
 
-      // 명찰: 실제 머리 위로 띄움
+      // 명찰: 실제 머리 위로 띄움(캐릭터가 커져도 안 겹치게)
       p.label.x = p.x;
-      p.label.y = p.y - HEAD_OFF - 20 - off;
+      p.label.y = p.y - HEAD_OFF * p.scale - 22 - off;
       p.label.setDepth(p.y + 0.1);
     });
 
-    if (me) this.cameraTarget.setPosition(me.x, me.y - VIS_OFFY);
+    if (me) this.cameraTarget.setPosition(me.x, me.y - VIS_OFFY * me.scale);
 
     // [2단계] 그리기 오버레이(캐릭터 위 격자) — 'drawing' 상태에서만
     if (this.drawState === 'drawing' && me) {

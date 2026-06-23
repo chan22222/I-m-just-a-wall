@@ -16,7 +16,8 @@ export class DrawingBoard {
   constructor({ onApply, onClose } = {}) {
     this.onApply = onApply;
     this.onClose = onClose;
-    this.GRID = 32; // 그리기 해상도(32x32)
+    this.cols = 32; // 격자 가로 칸수
+    this.rows = 32; // 세로 칸수(영역 비율에 맞춰 setGrid로 조정 → 칸이 정사각 유지)
 
     this.color = '#e23b3b';
     this.colorNum = 0xe23b3b;
@@ -36,9 +37,17 @@ export class DrawingBoard {
   }
 
   _blankCells() {
-    return Array.from({ length: this.GRID }, () =>
-      Array.from({ length: this.GRID }, () => null)
+    return Array.from({ length: this.rows }, () =>
+      Array.from({ length: this.cols }, () => null)
     );
+  }
+
+  // 영역 비율에 맞춰 격자 칸수 설정(칸이 정사각이 되게) — 편집 진입 시 호출
+  setGrid(cols, rows) {
+    this.cols = Math.max(8, cols | 0);
+    this.rows = Math.max(8, rows | 0);
+    this.clearCells();
+    this.resetHistory();
   }
 
   // ---- 되돌리기/다시 ------------------------------------------------------
@@ -108,14 +117,14 @@ export class DrawingBoard {
     const img = new Image();
     img.onload = () => {
       const c = document.createElement('canvas');
-      c.width = this.GRID;
-      c.height = this.GRID;
+      c.width = this.cols;
+      c.height = this.rows;
       const ctx = c.getContext('2d');
-      ctx.drawImage(img, 0, 0, this.GRID, this.GRID);
-      const data = ctx.getImageData(0, 0, this.GRID, this.GRID).data;
-      for (let y = 0; y < this.GRID; y++) {
-        for (let x = 0; x < this.GRID; x++) {
-          const i = (y * this.GRID + x) * 4;
+      ctx.drawImage(img, 0, 0, this.cols, this.rows);
+      const data = ctx.getImageData(0, 0, this.cols, this.rows).data;
+      for (let y = 0; y < this.rows; y++) {
+        for (let x = 0; x < this.cols; x++) {
+          const i = (y * this.cols + x) * 4;
           if (data[i + 3] > 10) {
             const hex = [data[i], data[i + 1], data[i + 2]]
               .map((v) => v.toString(16).padStart(2, '0')).join('');
@@ -182,19 +191,19 @@ export class DrawingBoard {
   paint(cx, cy, erase) {
     for (const [dx, dy] of this.brushOffsets()) {
       const x = cx + dx, y = cy + dy;
-      if (x < 0 || y < 0 || x >= this.GRID || y >= this.GRID) continue;
+      if (x < 0 || y < 0 || x >= this.cols || y >= this.rows) continue;
       this.cells[y][x] = erase ? null : this.color;
     }
   }
 
-  // 16x16 PNG dataURL (캐릭터 텍스처로 사용)
+  // cols×rows PNG dataURL (캐릭터 텍스처로 사용)
   toDataURL() {
     const out = document.createElement('canvas');
-    out.width = this.GRID;
-    out.height = this.GRID;
+    out.width = this.cols;
+    out.height = this.rows;
     const ctx = out.getContext('2d');
-    for (let y = 0; y < this.GRID; y++) {
-      for (let x = 0; x < this.GRID; x++) {
+    for (let y = 0; y < this.rows; y++) {
+      for (let x = 0; x < this.cols; x++) {
         const c = this.cells[y][x];
         if (!c) continue;
         ctx.fillStyle = c;

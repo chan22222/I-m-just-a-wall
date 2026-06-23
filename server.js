@@ -67,6 +67,7 @@ io.on('connection', (socket) => {
     const me = {
       id: socket.id,
       role,
+      color: Math.floor(Math.random() * 3), // 숨는이 색(gray/lemon/orange) 랜덤 인덱스
       name: (name || `P-${socket.id.slice(0, 4)}`).toString().slice(0, 16),
       x: 200 + Math.random() * (WORLD.width - 400),
       y: 200 + Math.random() * (WORLD.height - 400),
