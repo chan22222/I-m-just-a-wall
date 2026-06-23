@@ -94,7 +94,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   create() {
-    this.world = { width: 1672, height: 941 }; // map01.png 원본 크기(1:1, 확대 안 함 → 깨짐 없음)
+    this.world = { width: 3344, height: 1882 }; // map01.png(1672×941) 2배(NEAREST, 정수 배율 → 깔끔)
     this.players = new Map();
     this.props = [];
     this.myId = null;
@@ -258,10 +258,9 @@ export class GameScene extends Phaser.Scene {
   }
 
   _drawBackground() {
-    // 맵 이미지(map01)를 월드 전체에 배치. 2배 확대 시 nearest(전역 pixelArt)면 계단/깨짐이
-    // 생기므로 맵 텍스처만 LINEAR(부드럽게)로 필터링한다(캐릭터 도트는 nearest 유지).
+    // 맵 이미지(map01)를 월드 전체에 배치. NEAREST(최근접/픽셀) 필터로 또렷하게 확대.
     const tex = this.textures.get('map01');
-    if (tex) tex.setFilter(Phaser.Textures.FilterMode.LINEAR);
+    if (tex) tex.setFilter(Phaser.Textures.FilterMode.NEAREST);
     this.add.image(0, 0, 'map01')
       .setOrigin(0, 0)
       .setDisplaySize(this.world.width, this.world.height)
@@ -290,13 +289,15 @@ export class GameScene extends Phaser.Scene {
   _setupPostFX() {
     const cam = this.cameras.main;
     if (!cam || !cam.postFX) return; // WebGL 아니면 건너뜀(캔버스 폴백)
-    this._chromaBase = 0.02; // 평소 아주 약한 색수차
-    cam.postFX.addVignette(0.5, 0.5, 0.9, 0.45);     // 가장자리 어둡게
-    cam.postFX.addBloom(0xffffff, 1, 1, 1, 0.55, 4); // 은은한 발광
-    cam.setPostPipeline(ChromaticAberrationPostFX);  // 색수차(커스텀)
+    this._chromaBase = 0.01;     // 평소 거의 안 보일 만큼 약한 색수차
+    this._vignetteStrength = 0.7; // 평소 비네팅 강도
+    // Bloom 은 매 프레임 풀스크린 다중 블러라 렉 → 제거. 비네팅은 진하게(가벼움).
+    this._vignette = cam.postFX.addVignette(0.5, 0.5, 0.8, this._vignetteStrength);
+    cam.setPostPipeline(ChromaticAberrationPostFX);  // 색수차(커스텀, 단일 패스 → 가벼움)
     const ca = cam.getPostPipeline(ChromaticAberrationPostFX);
     this.chroma = Array.isArray(ca) ? ca[0] : ca;
     if (this.chroma) this.chroma.intensity = this._chromaBase;
+    this._fxDrawing = false;
   }
 
   // 순간 색수차 펄스(발사/피격 등) → 기본값으로 부드럽게 복귀
@@ -559,7 +560,7 @@ export class GameScene extends Phaser.Scene {
     me.facingLeft = aimX < ox;                   // 쏘는 방향(커서)을 바라보게 좌우 전환
     me._kbx = -ux * SHOT_KNOCKBACK;              // 발사 반동: 뒤로 살짝 밀림
     me._kby = -uy * SHOT_KNOCKBACK;
-    this._pulseChroma(0.09);                     // 발사 순간 색수차 펄스
+    this._pulseChroma(0.09);                     // 발사 순간 색수차 펄스(크게)
     if (this.socket) this.socket.emit('shoot');  // 다른 클라이언트에도 발사 포즈 표시
 
     this._slowUntil = now + SLOW_MS; // 발사 후 아주 짧은 둔화(매 발)
@@ -665,7 +666,7 @@ export class GameScene extends Phaser.Scene {
     if (!p) return;
     p.caught = true; // 렌더 루프에서 시체 + 그림 표시
     this._killEffect(p.x, p.y - 61 * p.scale); // 처치 폭발(EFFECT 시트)
-    this._pulseChroma(0.16); // 처치 순간 색수차 강하게
+    this._pulseChroma(0.08); // 처치 순간 색수차 펄스
     if (id === this.myId) {
       this.caught = true;
       // 그리기 중이었으면 정리(줌/도구막대 닫기)
@@ -733,11 +734,31 @@ export class GameScene extends Phaser.Scene {
       px = (wx - cam.worldView.x) * cam.zoom;
       py = (wy - cam.worldView.y) * cam.zoom;
     }
+    // 그리기 모드에선 postFX 가 꺼져 있으므로(아래 _applyPostFXForState) 원본 색이 그대로 추출됨
     r.snapshotPixel(px, py, (color) => {
       const hex = '#' + [color.red, color.green, color.blue]
         .map((v) => v.toString(16).padStart(2, '0')).join('');
       this.board.pickColor(hex);
     });
+  }
+
+  // 셰이더(비네팅·색수차)는 그리기 줌인이 '거의 다 확대된 뒤'에 꺼진다(다 확대되고 나서 사라짐).
+  // 평소(줌≈1)엔 켜져 있고, 줌아웃되면 다시 켜짐.
+  _applyPostFXForState() {
+    const cam = this.cameras.main;
+    if (!cam) return;
+    const off = cam.zoom >= DRAW_ZOOM * 0.85;
+    if (off === this._fxDrawing) return;
+    this._fxDrawing = off;
+    // 즉시 끄지 않고 트윈으로 서서히 사라지게/다시 나타나게
+    if (this._vignette) {
+      this.tweens.killTweensOf(this._vignette);
+      this.tweens.add({ targets: this._vignette, strength: off ? 0 : this._vignetteStrength, duration: 400, ease: 'Sine.easeInOut' });
+    }
+    if (this.chroma) {
+      this.tweens.killTweensOf(this.chroma);
+      this.tweens.add({ targets: this.chroma, intensity: off ? 0 : this._chromaBase, duration: 400, ease: 'Sine.easeInOut' });
+    }
   }
 
   // 그리기 모드에서 캐릭터 위에 격자/칠한 셀/테두리 표시
@@ -1235,6 +1256,7 @@ export class GameScene extends Phaser.Scene {
   update(time, delta) {
     const me = this.players.get(this.myId);
     const dt = delta / 1000;
+    this._applyPostFXForState(); // 그리기 모드 진입/이탈 시 셰이더 on/off
 
     // [1단계] 이동 + 점프
     //   closed  : 평소 속도, 점프 가능
