@@ -73,6 +73,7 @@ io.on('connection', (socket) => {
       y: 200 + Math.random() * (WORLD.height - 400),
       angle: 0,
       dataURL: null, // 아직 위장 그림 없음
+      caught: false, // 술래에게 잡혔는지
     };
     room.players.set(socket.id, me);
 
@@ -143,6 +144,24 @@ io.on('connection', (socket) => {
     const msg = String(text || '').trim().slice(0, 120);
     if (!msg) return;
     io.to(currentRoomId).emit('chatMessage', { id: socket.id, name: p.name, text: msg });
+  });
+
+  // -------------------------------------------------------------------------
+  // 사격으로 숨는이 잡기: 술래가 명중 판정 후 보냄 → 서버가 확정·중계 + 승리 체크
+  // -------------------------------------------------------------------------
+  socket.on('catch', ({ targetId } = {}) => {
+    if (!currentRoomId) return;
+    const room = rooms.get(currentRoomId);
+    if (!room) return;
+    const shooter = room.players.get(socket.id);
+    const target = room.players.get(targetId);
+    if (!shooter || shooter.role !== 'seeker') return;
+    if (!target || target.role !== 'hider' || target.caught) return;
+    target.caught = true;
+    io.to(currentRoomId).emit('playerCaught', { id: targetId });
+    // 안 잡힌 숨는이가 0명이면 술래 승리
+    const remaining = [...room.players.values()].filter((p) => p.role === 'hider' && !p.caught).length;
+    if (remaining === 0) io.to(currentRoomId).emit('gameOver', { winner: 'seeker' });
   });
 
   socket.on('disconnect', () => {

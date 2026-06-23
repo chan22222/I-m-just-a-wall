@@ -19,7 +19,15 @@ const GRAVITY = 1200;     // 중력(z, px/s^2)
 const CONE_HALF = Phaser.Math.DEG_TO_RAD * 45; // 부채꼴 반각(전체 90도)
 const CONE_R = 780;       // 시야 거리(가시거리 더 늘림)
 const NEAR_R = 180;       // 술래 주변 항상 보이는 반경 — 커진 캐릭터를 안 가리게
-const WHISTLE_R = 420;
+const WHISTLE_R = 420;        // 🎵 이펙트(숨는이)가 뜨는 반경
+const WHISTLE_MAX_R = 800;    // 소리가 들리는 최대 거리(이 거리에서 가장 작게)
+// 사격(술래) — 마우스 방향 발사로 숨는이 잡기
+const GUN_RANGE = 780;    // 사거리(= 시야 거리)
+const HIT_RADIUS = 48;    // 명중 판정 반경(조준선에서 이 거리 안이면 맞음)
+const GUN_CD = 450;       // 명중/평소 쿨다운(ms)
+const GUN_CD_MISS = 1500; // 빗맞힘 쿨다운(ms)
+const SLOW_MS = 1000;     // 빗맞힘 후 둔화 지속(ms)
+const SLOW_FACTOR = 0.4;  // 둔화 시 속도 배율
 const ROLE_COLOR = { seeker: 0xff5a5a, hider: 0x5fe08a };
 const HIDER_SETS = ['gray', 'lemon', 'orange']; // 숨는이 색 세트(랜덤 배정)
 
@@ -43,6 +51,7 @@ const FEET_OFF = Math.round(CAT_DH * (32 - 27) / 32); // 실제 발바닥 ≈ 23
 const DEPTH_BG = -1000;
 const DEPTH_SHADOW = -5;
 const DEPTH_RING = -4;
+const DEPTH_SEEKER = 3000; // 술래(본인)는 항상 다른 캐릭터/그림보다 앞(안개 아래)
 const DEPTH_FOG = 5000;
 const DEPTH_EMOJI = 6000;
 const DEPTH_DRAW = 7000;
@@ -69,6 +78,7 @@ export class GameScene extends Phaser.Scene {
       this.load.spritesheet(c + '_jump', H + '3_Cat_Jump-Sheet.png', F);
       this.load.spritesheet(c + '_fall', H + '4_Cat_Fall-Sheet.png', F);
       this.load.spritesheet(c + '_canvas', H + '5_Cat_Canvas-Sheet.png', F);
+      this.load.image(c + '_dead', H + '6_Cat_dead.png'); // 잡혔을 때 시체
     });
   }
 
@@ -90,6 +100,11 @@ export class GameScene extends Phaser.Scene {
     // opening/closing(애니 재생) 중에는 키 입력이 막혀 연타 불가
     this.drawState = 'closed';
     this.openIntent = 'hold'; // 캔버스 꺼낼 때 의도: 'hold'(들고만) | 'draw'(편집)
+    // 사격/잡힘 상태
+    this._gunCdUntil = 0;
+    this._slowUntil = 0;
+    this.caught = false;
+    this.gameEnded = false;
 
     this._makeAnims();
     this._makePropTextures();
@@ -126,7 +141,14 @@ export class GameScene extends Phaser.Scene {
     this._eyedropMode = false;  // 스포이드 버튼 모드
     this.input.on('pointerdown', (ptr) => {
       if (this.chatOpen) { this.chatInput.blur(); return; } // 게임(캔버스) 클릭 시 채팅 해제
-      if (!this.board.isOpen()) return;
+      if (!this.board.isOpen()) {
+        // 그리는 중이 아닐 때: 술래 좌클릭 = 사격
+        if (this.myRole === 'seeker' && !this.caught && !this.gameEnded &&
+            this.drawState === 'closed' && ptr.leftButtonDown()) {
+          this._shoot();
+        }
+        return;
+      }
       if (this._eyedropMode) { this._eyedropper(); this._setEyedrop(false); return; } // 클릭=색 추출
       this._lastCell = null;    // 새 스트로크 시작(이전 획과 연결 안 함)
       this._strokeDirty = false;
@@ -176,6 +198,11 @@ export class GameScene extends Phaser.Scene {
   }
 
   _makePropTextures() {
+    if (!this.textures.exists('fx-dot')) { // 이펙트 파티클(작은 원)
+      const g = this.make.graphics({ add: false });
+      g.fillStyle(0xffffff, 1); g.fillCircle(6, 6, 6);
+      g.generateTexture('fx-dot', 12, 12); g.destroy();
+    }
     if (!this.textures.exists('propPillar')) {
       const g = this.make.graphics({ add: false });
       g.fillStyle(0x5a6273, 1); g.fillRect(8, 8, 24, 84);
@@ -310,7 +337,7 @@ export class GameScene extends Phaser.Scene {
     // (가까이 가면 나타나고 멀어지면 사라지는 '깜빡임 단서'를 없애 더 어렵게)
     // 술래는 남의 명찰/그림자는 안 보이게 한다.
     this.players.forEach((p, id) => {
-      if (id === this.myId) return;
+      if (id === this.myId || p.caught) return; // 시체는 렌더 루프가 처리
       p.shadow.setVisible(false);
       p.label.setVisible(false);
     });
@@ -440,6 +467,171 @@ export class GameScene extends Phaser.Scene {
     this._strokeDirty = true;
   }
 
+  // ===========================================================================
+  // 사격(술래) — 마우스 방향으로 발사, 시야 안 숨는이에 맞으면 잡음
+  // ===========================================================================
+  _shoot() {
+    const me = this.players.get(this.myId);
+    if (!me) return;
+    const now = this.time.now;
+    if (now < this._gunCdUntil) return;
+
+    const ox = me.x;
+    const oy = me.y - VIS_OFFY * me.scale; // 조준 원점
+    const ptr = this.input.activePointer;
+    const aimX = ptr.worldX, aimY = ptr.worldY;       // 목적지(커서)
+    const aimDist = Math.hypot(aimX - ox, aimY - oy) || 1;
+
+    // 목적지(커서) 근처에 있는 숨는이만 명중 (지나가는 길의 다른 사람은 안 맞음) + 사거리 내
+    let hit = null, best = Infinity;
+    this.players.forEach((p, id) => {
+      if (id === this.myId || p.role !== 'hider' || p.caught) return;
+      const cx = p.x, cy = p.y - 61 * p.scale; // 숨는이 몸통 중심
+      if (Math.hypot(cx - ox, cy - oy) > GUN_RANGE) return; // 사거리
+      const d = Math.hypot(cx - aimX, cy - aimY);           // 커서와의 거리
+      if (d <= HIT_RADIUS && d < best) { hit = p; best = d; }
+    });
+
+    // 탄선: 원점 → 목적지(사거리까지만)
+    const len = Math.min(aimDist, GUN_RANGE);
+    const ux = (aimX - ox) / aimDist, uy = (aimY - oy) / aimDist;
+    this._drawTracer(ox, oy, ox + ux * len, oy + uy * len);
+    this._muzzleFlash(ox, oy, Math.atan2(uy, ux)); // 발사 이펙트
+    this._playShot();
+
+    if (hit) {
+      if (this.socket) this.socket.emit('catch', { targetId: hit.id });
+      this._gunCdUntil = now + GUN_CD;
+    } else {
+      // 빗맞힘: 긴 쿨다운 + 잠깐 둔화
+      this._gunCdUntil = now + GUN_CD_MISS;
+      this._slowUntil = now + SLOW_MS;
+    }
+  }
+
+  _drawTracer(x1, y1, x2, y2) {
+    // 지나가는 길: 흐릿하게(실제로 맞는 느낌 안 나게)
+    const line = this.add.graphics().setDepth(DEPTH_EMOJI);
+    line.lineStyle(3, 0xfff2a0, 0.22);
+    line.lineBetween(x1, y1, x2, y2);
+    this.tweens.add({ targets: line, alpha: 0, duration: 200, onComplete: () => line.destroy() });
+    // 목적지: ChronosOverload식 파티클 폭발(기존 원형 이펙트 대체)
+    this._impactEffect(x2, y2);
+  }
+
+  // 목표지점 임팩트(발사 시): 파티클 폭발
+  _impactEffect(x, y) {
+    const p = this.add.particles(x, y, 'fx-dot', {
+      speed: { min: 80, max: 280 },
+      scale: { start: 2, end: 0 },
+      lifespan: 400, tint: [0xffffff, 0xffe066, 0xff7a5a], emitting: false,
+    }).setDepth(DEPTH_EMOJI + 2);
+    p.explode(14);
+    this.time.delayedCall(480, () => p.destroy());
+  }
+
+  // 처치(kill) 이펙트: 별/반짝이 뿅 (귀엽게)
+  _killEffect(x, y) {
+    // 파스텔 파티클 뿅 (살짝 떨어지며)
+    const p = this.add.particles(x, y, 'fx-dot', {
+      speed: { min: 90, max: 240 },
+      scale: { start: 2.6, end: 0 },
+      lifespan: 600,
+      gravityY: 320,
+      tint: [0xffd1e8, 0xfff3a0, 0xb6f0d8, 0xc9b8ff, 0xa8e0ff],
+      emitting: false,
+    }).setDepth(DEPTH_EMOJI + 3);
+    p.explode(18);
+    this.time.delayedCall(700, () => p.destroy());
+    // 가운데 별이 뽁 튀어나왔다 떠오르며 사라짐
+    const star = this.add.text(x, y, '⭐', { fontSize: '36px', padding: { x: 6, y: 10 } })
+      .setOrigin(0.5).setDepth(DEPTH_EMOJI + 4).setScale(0.3);
+    this.tweens.add({
+      targets: star, scale: 1.5, duration: 220, ease: 'Back.easeOut',
+      onComplete: () => this.tweens.add({ targets: star, alpha: 0, y: y - 34, duration: 320, onComplete: () => star.destroy() }),
+    });
+    // 작은 반짝이 사방으로
+    for (let i = 0; i < 5; i++) {
+      const ang = (Math.PI * 2 * i) / 5 + 0.5;
+      const s = this.add.text(x, y, '✨', { fontSize: '20px', padding: { x: 4, y: 6 } })
+        .setOrigin(0.5).setDepth(DEPTH_EMOJI + 4);
+      this.tweens.add({
+        targets: s, x: x + Math.cos(ang) * 48, y: y + Math.sin(ang) * 48,
+        alpha: 0, scale: 0.4, duration: 500, ease: 'Cubic.easeOut',
+        onComplete: () => s.destroy(),
+      });
+    }
+  }
+
+  // 발사 이펙트: 총구 플래시 + 방향 파티클 (ChronosOverload 스타일)
+  _muzzleFlash(x, y, angle) {
+    const tint = 0xffe066;
+    const flash = this.add.circle(x, y, 10, tint, 0.85).setDepth(DEPTH_EMOJI);
+    this.tweens.add({ targets: flash, alpha: 0, scale: 2.4, duration: 90, onComplete: () => flash.destroy() });
+    const deg = Phaser.Math.RadToDeg(angle);
+    const p = this.add.particles(x, y, 'fx-dot', {
+      speed: { min: 140, max: 320 },
+      angle: { min: deg - 18, max: deg + 18 },
+      scale: { start: 1.3, end: 0 },
+      lifespan: 200, tint, emitting: false,
+    }).setDepth(DEPTH_EMOJI);
+    p.explode(7);
+    this.time.delayedCall(260, () => p.destroy());
+  }
+
+  _playShot() {
+    this._ensureAudio();
+    const ctx = this.audioCtx;
+    const t = ctx.currentTime;
+    const o = ctx.createOscillator();
+    const gg = ctx.createGain();
+    o.type = 'square';
+    o.frequency.setValueAtTime(680, t);
+    o.frequency.exponentialRampToValueAtTime(120, t + 0.12);
+    gg.gain.setValueAtTime(0.0001, t);
+    gg.gain.exponentialRampToValueAtTime(0.2, t + 0.01);
+    gg.gain.exponentialRampToValueAtTime(0.0001, t + 0.14);
+    o.connect(gg); gg.connect(ctx.destination);
+    o.start(t); o.stop(t + 0.16);
+  }
+
+  // 잡힘 처리: 해당 숨는이를 화면에서 제거(관전 아웃)
+  _onCaught(id) {
+    const p = this.players.get(id);
+    if (!p) return;
+    p.caught = true; // 렌더 루프에서 시체 + 그림 표시
+    this._killEffect(p.x, p.y - 61 * p.scale); // 처치 폭발(EFFECT 시트)
+    if (id === this.myId) {
+      this.caught = true;
+      // 그리기 중이었으면 정리(줌/도구막대 닫기)
+      this.board.hide();
+      this.drawGfx.setVisible(false).clear();
+      this._setEyedrop(false);
+      this.cameras.main.zoomTo(1, 150);
+      this.drawState = 'closed';
+      const badge = document.getElementById('role-badge');
+      if (badge) {
+        badge.textContent = '💀 잡힘 — 관전 중';
+        badge.removeAttribute('data-tip');
+        badge.className = '';
+      }
+    }
+  }
+
+  _onGameOver(winner) {
+    if (this.gameEnded) return;
+    this.gameEnded = true;
+    const cam = this.cameras.main;
+    const msg = winner === 'seeker'
+      ? '🏆 SEEKER 승리\n모든 HIDER 검거!'
+      : 'GAME OVER';
+    this.add.text(cam.width / 2, cam.height / 2, msg, {
+      fontFamily: 'sans-serif', fontSize: '34px', fontStyle: 'bold',
+      color: '#ffffff', backgroundColor: 'rgba(0,0,0,0.72)',
+      padding: { x: 26, y: 18 }, align: 'center',
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(99999);
+  }
+
   // 스포이드 찍기 모드 on/off (버튼 강조 + 커서 변경)
   _setEyedrop(on) {
     this._eyedropMode = !!on;
@@ -565,6 +757,8 @@ export class GameScene extends Phaser.Scene {
     socket.on('playerDrew', ({ id, dataURL }) => this.applyDrawing(id, dataURL));
     socket.on('playerWhistled', ({ id, x, y }) => this._onWhistle(id, x, y));
     socket.on('chatMessage', ({ id, name, text }) => this._addChatMessage(name, text, id === this.myId));
+    socket.on('playerCaught', ({ id }) => this._onCaught(id));
+    socket.on('gameOver', ({ winner }) => this._onGameOver(winner));
 
     socket.on('playerLeft', ({ id }) => {
       const p = this.players.get(id);
@@ -625,6 +819,7 @@ export class GameScene extends Phaser.Scene {
       currentAnim: null,
       lastMove: 0,
       holding: !!info.holding,
+      caught: !!info.caught,
       hasDrawing: false,
       skinDataURL: null,
     };
@@ -751,7 +946,7 @@ export class GameScene extends Phaser.Scene {
     if (this.audioCtx.state === 'suspended') this.audioCtx.resume();
   }
 
-  _playWhistle() {
+  _playWhistle(vol = 1) {
     this._ensureAudio();
     const ctx = this.audioCtx;
     const t = ctx.currentTime;
@@ -761,8 +956,9 @@ export class GameScene extends Phaser.Scene {
     o.frequency.setValueAtTime(900, t);
     o.frequency.exponentialRampToValueAtTime(1750, t + 0.14);
     o.frequency.exponentialRampToValueAtTime(1150, t + 0.30);
+    const peak = Math.max(0.0008, 0.25 * vol); // 거리별 최대 음량
     g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(0.25, t + 0.03);
+    g.gain.exponentialRampToValueAtTime(peak, t + 0.03);
     g.gain.exponentialRampToValueAtTime(0.0001, t + 0.42);
     o.connect(g); g.connect(ctx.destination);
     o.start(t); o.stop(t + 0.45);
@@ -771,13 +967,20 @@ export class GameScene extends Phaser.Scene {
   _onWhistle(id, x, y) {
     const me = this.players.get(this.myId);
     if (!me) return;
-    if (Phaser.Math.Distance.Between(me.x, me.y, x, y) > WHISTLE_R) return;
-    this._playWhistle();
-    this._popEmoji(x, y, '🎵');
+    const isMine = id === this.myId;
+    const dist = Phaser.Math.Distance.Between(me.x, me.y, x, y);
+    if (!isMine && dist > WHISTLE_MAX_R) return; // 최대 가청거리 밖이면 무시
+    // 거리별 음량: 가까울수록 크고 멀수록 작게(내 휘파람은 최대) — 시야와 무관
+    const vol = isMine ? 1 : Phaser.Math.Clamp(1 - dist / WHISTLE_MAX_R, 0.06, 1);
+    this._playWhistle(vol);
+    // 이펙트(🎵): 숨는이는 반경 안에서만 / 술래는 자기 휘파람만 (위치 단서 방지)
+    if (isMine || (this.myRole !== 'seeker' && dist <= WHISTLE_R)) {
+      this._popEmoji(x, y, '🎵');
+    }
   }
 
   _popEmoji(x, y, emoji) {
-    const txt = this.add.text(x, y - CAT_DH, emoji, { fontSize: '28px' })
+    const txt = this.add.text(x, y - CAT_DH, emoji, { fontSize: '28px', padding: { x: 5, y: 8 } })
       .setOrigin(0.5).setDepth(DEPTH_EMOJI);
     this.tweens.add({
       targets: txt, y: y - CAT_DH - 50, alpha: { from: 1, to: 0 },
@@ -795,9 +998,10 @@ export class GameScene extends Phaser.Scene {
     // [1단계] 이동 + 점프
     //   closed  : 평소 속도, 점프 가능
     //   holding : 캔버스 든 채 아주 느리게 이동(점프 불가, 캔버스 포즈 유지)
-    if (me && !this.chatOpen && (this.drawState === 'closed' || this.drawState === 'holding')) {
+    if (me && !this.chatOpen && !this.caught && (this.drawState === 'closed' || this.drawState === 'holding')) {
       const holding = this.drawState === 'holding';
-      const baseSpeed = this.myRole === 'seeker' ? SEEKER_SPEED : SPEED;
+      let baseSpeed = this.myRole === 'seeker' ? SEEKER_SPEED : SPEED;
+      if (time < this._slowUntil) baseSpeed *= SLOW_FACTOR; // 빗맞힘 후 둔화(술래)
       const speed = holding ? HOLD_SPEED : baseSpeed;
       let vx = 0, vy = 0;
       if (this.keys.a.isDown) vx -= 1;
@@ -832,17 +1036,18 @@ export class GameScene extends Phaser.Scene {
       this.facingAngle = Phaser.Math.Angle.Between(me.x, me.y - VIS_OFFY * me.scale, ptr.worldX, ptr.worldY);
     }
 
-    // [2단계] 키 입력
+    // [2단계] 키 입력 (잡혀서 관전 중이면 게임 조작 잠금)
     const isSeeker = this.myRole === 'seeker';
+    const locked = this.caught || this.gameEnded;
     //  E = 캔버스 꺼내기/집어넣기 (숨는이 전용 — 술래는 위장 안 함)
-    if (!isSeeker && Phaser.Input.Keyboard.JustDown(this.keys.e)) {
+    if (!locked && !isSeeker && Phaser.Input.Keyboard.JustDown(this.keys.e)) {
       if (this.drawState === 'closed') this._takeOut('hold');
       else if (this.drawState === 'holding') this._putAway();
     }
     //  Q = 그리기
     //   술래: 캐릭터 꾸미기(바로 편집 → 적용하면 코스튬으로 항상 표시)
     //   숨는이: 캔버스 꺼내 그리기(위장)
-    if (Phaser.Input.Keyboard.JustDown(this.keys.q)) {
+    if (!locked && Phaser.Input.Keyboard.JustDown(this.keys.q)) {
       if (isSeeker) {
         if (this.drawState === 'closed') this._openEditor();
         else if (this.drawState === 'drawing') this._applyAndHold();
@@ -853,7 +1058,7 @@ export class GameScene extends Phaser.Scene {
       }
     }
     //  R = 휘파람 (이동/들고있을 때만)
-    if (Phaser.Input.Keyboard.JustDown(this.keys.r) && me) {
+    if (!locked && Phaser.Input.Keyboard.JustDown(this.keys.r) && me) {
       if (this.drawState === 'closed' || this.drawState === 'holding') {
         this._ensureAudio();
         if (this.socket) this.socket.emit('whistle', { x: Math.round(me.x), y: Math.round(me.y) });
@@ -897,6 +1102,40 @@ export class GameScene extends Phaser.Scene {
 
     // ★ 2.5D 렌더
     this.players.forEach((p, id) => {
+      if (p.caught) { // 잡힘(관전 아웃): 그림은 죽은 자리 그대로 전시 + 시체는 그 아래로(살짝 겹침)
+        const sc = p.scale;
+        if (p.currentAnim !== '__dead') {
+          p.currentAnim = '__dead';
+          p.body.anims.stop();
+          p.body.setTexture(p.set + '_dead');
+          p.body.setOrigin(0.5, 1);
+          p.body.setDisplaySize(CAT_DH * sc, CAT_DH * sc);
+        }
+        let corpseY = p.y; // 그림 없으면 그냥 바닥
+        if (p.hasDrawing) {
+          // 그림: 살아있을 때 위장 위치 그대로(이동/변형 X)
+          p.skin.setOrigin(0.5, 0.5);
+          p.skin.x = p.x;
+          p.skin.y = p.y - p.regionCY * sc;
+          p.skin.setFlipX(false);
+          p.skin.setDepth(p.y); // 그림은 뒤
+          p.skin.setVisible(true);
+          // 시체: 그림 아래로 내리되 머리만 그림 밑단과 살짝 겹치게
+          const drawBottom = p.y - p.regionCY * sc + (p.regionH * sc) / 2;
+          corpseY = drawBottom - 58 + HEAD_OFF * sc; // 더 많이 겹침
+        } else {
+          p.skin.setVisible(false);
+        }
+        p.body.x = p.x; p.body.y = corpseY;
+        p.body.setFlipX(false);
+        p.body.setDepth(p.y + 0.3); // 시체가 그림보다 앞
+        p.body.setVisible(true);
+        p.shadow.x = p.x; p.shadow.y = corpseY - FEET_OFF * sc + 12;
+        p.shadow.setScale(1);
+        p.shadow.setVisible(true);
+        p.label.setVisible(false);
+        return;
+      }
       if (id !== this.myId) {
         p.x = Phaser.Math.Linear(p.x, p.target.x, 0.25);
         p.y = Phaser.Math.Linear(p.y, p.target.y, 0.25);
@@ -932,6 +1171,13 @@ export class GameScene extends Phaser.Scene {
         const holdingShown = id === this.myId ? this.drawState === 'holding' : p.holding;
         p.skin.setVisible(holdingShown && p.hasDrawing);
         p.skin.setFlipX(false);
+      }
+
+      // 술래(본인)는 항상 맨 앞에 그려 → 숨는이 위장 그림이 술래 앞으로 와서
+      // 무빙만으로 들키는 것 방지(겹쳐도 술래가 위)
+      if (id === this.myId && this.myRole === 'seeker') {
+        p.body.setDepth(DEPTH_SEEKER);
+        p.skin.setDepth(DEPTH_SEEKER + 0.1);
       }
 
       // 그림자: 실제 발에서 아래로 살짝 띄움
