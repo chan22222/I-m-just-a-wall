@@ -12,12 +12,13 @@
 import { DrawingBoard } from './DrawingBoard.js';
 
 const SPEED = 240;        // 이동 속도(px/s)
+const SEEKER_SPEED = 360; // 술래 이동 속도(1.5배)
 const HOLD_SPEED = 55;    // 캔버스 든 채 이동 속도(매우 느림)
 const JUMP_VEL = 380;     // 점프 초기 상승 속도(z, px/s)
 const GRAVITY = 1200;     // 중력(z, px/s^2)
 const CONE_HALF = Phaser.Math.DEG_TO_RAD * 45; // 부채꼴 반각(전체 90도)
-const CONE_R = 540;       // 시야 거리(훨씬 멀리)
-const NEAR_R = 130;       // 술래 주변 항상 보이는 반경 — 커진 캐릭터를 안 가리게
+const CONE_R = 780;       // 시야 거리(가시거리 더 늘림)
+const NEAR_R = 180;       // 술래 주변 항상 보이는 반경 — 커진 캐릭터를 안 가리게
 const WHISTLE_R = 420;
 const ROLE_COLOR = { seeker: 0xff5a5a, hider: 0x5fe08a };
 const HIDER_SETS = ['gray', 'lemon', 'orange']; // 숨는이 색 세트(랜덤 배정)
@@ -603,9 +604,9 @@ export class GameScene extends Phaser.Scene {
       .setVisible(false);
 
     const isMe = info.id === this.myId;
-    const label = this.add.text(0, 0, isMe ? '나' : info.name, {
+    const label = this.add.text(0, 0, info.name, {
       fontFamily: 'monospace', fontSize: '16px',
-      // 나=노랑, 술래(남이 볼 때)=빨강, 그 외=흰색
+      // 본인=노랑, 술래(남이 볼 때)=빨강, 그 외=흰색 (색으로 구분)
       color: isMe ? '#ffd83b' : (isSeekerP ? '#ff5a5a' : '#e7e9ee'),
       backgroundColor: 'rgba(0,0,0,0.4)', padding: { x: 5, y: 2 },
     }).setOrigin(0.5);
@@ -794,7 +795,8 @@ export class GameScene extends Phaser.Scene {
     //   holding : 캔버스 든 채 아주 느리게 이동(점프 불가, 캔버스 포즈 유지)
     if (me && !this.chatOpen && (this.drawState === 'closed' || this.drawState === 'holding')) {
       const holding = this.drawState === 'holding';
-      const speed = holding ? HOLD_SPEED : SPEED;
+      const baseSpeed = this.myRole === 'seeker' ? SEEKER_SPEED : SPEED;
+      const speed = holding ? HOLD_SPEED : baseSpeed;
       let vx = 0, vy = 0;
       if (this.keys.a.isDown) vx -= 1;
       if (this.keys.d.isDown) vx += 1;
