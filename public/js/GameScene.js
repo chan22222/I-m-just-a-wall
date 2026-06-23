@@ -159,6 +159,7 @@ export class GameScene extends Phaser.Scene {
     this.deadGfx = this.add.graphics().setDepth(DEPTH_FOG - 1);
 
     this._lastCell = null;      // 빠르게 움직일 때 점 끊김 방지용(직전 칠한 셀)
+    this._lastPaintCell = null; // Shift+클릭 직선용 앵커(마지막으로 실제 칠한 칸)
     this._strokeDirty = false;  // 이번 스트로크에서 실제로 칠했는지
     this._eyedropMode = false;  // 스포이드 버튼 모드
     this.input.on('pointerdown', (ptr) => {
@@ -172,9 +173,12 @@ export class GameScene extends Phaser.Scene {
         return;
       }
       if (this._eyedropMode) { this._eyedropper(); this._setEyedrop(false); return; } // 클릭=색 추출
-      this._lastCell = null;    // 새 스트로크 시작(이전 획과 연결 안 함)
+      // Shift+클릭: 직전 점 → 클릭 점을 직선으로(포토샵 방식). 보간 시작점을 직전 앵커로 둔다.
+      const shift = ptr.event && ptr.event.shiftKey;
       this._strokeDirty = false;
-      this._paintPointer(ptr);
+      this._strokeStart = null; // 이번 스트로크의 일자 고정 기준 초기화
+      this._lastCell = (shift && this._lastPaintCell) ? { ...this._lastPaintCell } : null;
+      this._paintPointer(ptr); // _lastCell 이 있으면 그 점부터 현재까지 직선 보간
     });
     this.input.on('pointermove', (ptr) => {
       if (this.board.isOpen() && !this._eyedropMode && ptr.isDown) this._paintPointer(ptr);
@@ -183,6 +187,7 @@ export class GameScene extends Phaser.Scene {
       if (this.board.isOpen() && this._strokeDirty) this.board.pushHistory(); // 한 획 = 되돌리기 1단계
       this._strokeDirty = false;
       this._lastCell = null;
+      this._strokeStart = null;
     });
 
     // 스포이드 버튼: 누르면 찍기 모드 토글, 캔버스 클릭하면 색 추출
@@ -436,6 +441,7 @@ export class GameScene extends Phaser.Scene {
       me.body.play(me.set + '_idle');
     }
     this.drawState = 'drawing';
+    this._lastPaintCell = null; // 새 편집 세션 → 직선 앵커 초기화
     // 영역 비율에 맞춰 격자 칸수 설정 → 칸이 정사각(폭 32칸 기준, 높이는 비율만큼)
     const cols = 32;
     const rows = Math.max(8, Math.round(cols * me.regionH / me.regionW));
@@ -492,9 +498,16 @@ export class GameScene extends Phaser.Scene {
     const me = this.players.get(this.myId);
     if (!me) return;
     const { left, top, cellW, cellH } = this._drawRegion(me);
-    const cx = Math.floor((ptr.worldX - left) / cellW);
-    const cy = Math.floor((ptr.worldY - top) / cellH);
+    let cx = Math.floor((ptr.worldX - left) / cellW);
+    let cy = Math.floor((ptr.worldY - top) / cellH);
     const erase = ptr.rightButtonDown();
+
+    if (!this._strokeStart) this._strokeStart = { cx, cy }; // 스트로크 시작점(일자 고정 기준)
+    // Shift 누르고 있으면 시작점 기준 수평/수직(일자)으로 고정
+    if (ptr.event && ptr.event.shiftKey) {
+      if (Math.abs(cx - this._strokeStart.cx) >= Math.abs(cy - this._strokeStart.cy)) cy = this._strokeStart.cy;
+      else cx = this._strokeStart.cx;
+    }
 
     const prev = this._lastCell;
     if (prev && (prev.cx !== cx || prev.cy !== cy)) {
@@ -514,6 +527,7 @@ export class GameScene extends Phaser.Scene {
     if (cx < 0 || cy < 0 || cx >= this.board.cols || cy >= this.board.rows) return;
     this.board.paint(cx, cy, erase);
     this._strokeDirty = true;
+    this._lastPaintCell = { cx, cy }; // 직선(Shift) 앵커 — 스트로크 넘어도 유지
   }
 
   // ===========================================================================
@@ -1347,8 +1361,14 @@ export class GameScene extends Phaser.Scene {
       }
       if (Phaser.Input.Keyboard.JustDown(this.keys.z)) this.board.undo();
       if (Phaser.Input.Keyboard.JustDown(this.keys.x)) this.board.redo();
-      if (Phaser.Input.Keyboard.JustDown(this.keys.openBracket)) this.board.setBrush(this.board.brush - 1);
-      if (Phaser.Input.Keyboard.JustDown(this.keys.closeBracket)) this.board.setBrush(this.board.brush + 1);
+      // [ ] 브러시 크기: 눌렀을 때 1회 + 누르고 있으면 반복(연타 불필요)
+      const brushStep = (d) => { this.board.setBrush(this.board.brush + d); this._lastBrushAt = time; };
+      if (Phaser.Input.Keyboard.JustDown(this.keys.openBracket)) brushStep(-1);
+      else if (Phaser.Input.Keyboard.JustDown(this.keys.closeBracket)) brushStep(1);
+      else if (time - (this._lastBrushAt || 0) > 110) {
+        if (this.keys.openBracket.isDown) brushStep(-1);
+        else if (this.keys.closeBracket.isDown) brushStep(1);
+      }
       if (Phaser.Input.Keyboard.JustDown(this.keys.esc)) this._cancelToHold(); // 취소
     }
 
