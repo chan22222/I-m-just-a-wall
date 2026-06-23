@@ -84,8 +84,11 @@ export class GameScene extends Phaser.Scene {
 
     this.keys = this.input.keyboard.addKeys({
       w: 'W', a: 'A', s: 'S', d: 'D',
-      q: 'Q', e: 'E', r: 'R', space: 'SPACE',
-    });
+      q: 'Q', e: 'E', r: 'R', t: 'T', space: 'SPACE',
+      z: 'Z', x: 'X', // 그리기 되돌리기/다시
+    }, false); // capture 끔 → 채팅 입력창에 글자가 정상 입력되도록
+
+    this._setupChat();
 
     // 우클릭(지우개) 시 브라우저 메뉴 방지
     this.input.mouse.disableContextMenu();
@@ -97,16 +100,29 @@ export class GameScene extends Phaser.Scene {
     });
     this.drawGfx = this.add.graphics().setDepth(DEPTH_DRAW).setVisible(false);
 
-    this._lastCell = null; // 빠르게 움직일 때 점 끊김 방지용(직전 칠한 셀)
+    this._lastCell = null;      // 빠르게 움직일 때 점 끊김 방지용(직전 칠한 셀)
+    this._strokeDirty = false;  // 이번 스트로크에서 실제로 칠했는지
+    this._eyedropMode = false;  // 스포이드 버튼 모드
     this.input.on('pointerdown', (ptr) => {
+      if (this.chatOpen) { this.chatInput.blur(); return; } // 게임(캔버스) 클릭 시 채팅 해제
       if (!this.board.isOpen()) return;
-      this._lastCell = null; // 새 스트로크 시작(이전 획과 연결 안 함)
+      if (this._eyedropMode) { this._eyedropper(); this._setEyedrop(false); return; } // 클릭=색 추출
+      this._lastCell = null;    // 새 스트로크 시작(이전 획과 연결 안 함)
+      this._strokeDirty = false;
       this._paintPointer(ptr);
     });
     this.input.on('pointermove', (ptr) => {
-      if (this.board.isOpen() && ptr.isDown) this._paintPointer(ptr);
+      if (this.board.isOpen() && !this._eyedropMode && ptr.isDown) this._paintPointer(ptr);
     });
-    this.input.on('pointerup', () => { this._lastCell = null; });
+    this.input.on('pointerup', () => {
+      if (this.board.isOpen() && this._strokeDirty) this.board.pushHistory(); // 한 획 = 되돌리기 1단계
+      this._strokeDirty = false;
+      this._lastCell = null;
+    });
+
+    // 스포이드 버튼: 누르면 찍기 모드 토글, 캔버스 클릭하면 색 추출
+    const pickBtn = document.getElementById('btn-pick');
+    if (pickBtn) pickBtn.addEventListener('click', () => this._setEyedrop(!this._eyedropMode));
 
     this._setupVision();   // [4단계]
     this._setupNetwork();  // [3단계]
@@ -302,10 +318,15 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
-  // Q(그리기): 캔버스에 그리는 편집 모드(줌인). holding 상태에서 진입.
+  // Q(그리기): 줌인 편집 모드. 숨는이는 holding에서, 술래는 closed에서 바로 진입.
   _openEditor() {
     const me = this.players.get(this.myId);
     if (!me) return;
+    if (this.myRole === 'seeker') {
+      me.z = 0; me.zVel = 0;            // 점프 중 진입해도 바닥에서
+      me.currentAnim = 'cat_idle';      // 꾸미는 동안 차분한 기본 포즈(캐릭터 위에 그림)
+      me.body.play('cat_idle');
+    }
     this.drawState = 'drawing';
     this.cameras.main.zoomTo(DRAW_ZOOM, 220);
     this.board.show();
@@ -313,12 +334,19 @@ export class GameScene extends Phaser.Scene {
     this.drawGfx.setVisible(true);
   }
 
-  // 편집 종료 공통: 줌아웃하고 holding(들고 멈춤)으로 복귀
+  // 편집 종료 공통: 줌아웃 후 — 숨는이는 holding(캔버스 든 상태), 술래는 closed(코스튬 항상 표시)
   _exitEditor() {
+    this._setEyedrop(false); // 스포이드 모드 해제
     this.board.hide();
     this.drawGfx.setVisible(false).clear();
     this.cameras.main.zoomTo(1, 220);
-    this.drawState = 'holding';
+    if (this.myRole === 'seeker') {
+      this.drawState = 'closed';
+      const me = this.players.get(this.myId);
+      if (me) me.currentAnim = null; // 다음 프레임에 이동 애니로 복귀
+    } else {
+      this.drawState = 'holding';
+    }
   }
 
   // 적용(Q/적용버튼): 그림 반영 후 holding 으로
@@ -371,6 +399,42 @@ export class GameScene extends Phaser.Scene {
   _paintCell(cx, cy, erase) {
     if (cx < 0 || cy < 0 || cx >= this.board.GRID || cy >= this.board.GRID) return;
     this.board.paint(cx, cy, erase);
+    this._strokeDirty = true;
+  }
+
+  // 스포이드 찍기 모드 on/off (버튼 강조 + 커서 변경)
+  _setEyedrop(on) {
+    this._eyedropMode = !!on;
+    const btn = document.getElementById('btn-pick');
+    if (btn) btn.classList.toggle('active', this._eyedropMode);
+    this.input.setDefaultCursor(this._eyedropMode ? 'crosshair' : 'default');
+  }
+
+  // 스포이드(Space 또는 찍기 모드 클릭): 포인터 위치의 색을 현재 색으로
+  // 그림 영역의 칠한 셀이면 정확한 색을, 그 외(맵·지형지물·다른 캐릭터)는 화면 픽셀을 추출
+  _eyedropper() {
+    const me = this.players.get(this.myId);
+    if (!me) return;
+    const ptr = this.input.activePointer;
+
+    // 1) 그림 영역 안에 칠해진 셀 → 정확한 색 즉시
+    const { left, top, cell } = this._drawRegion(me);
+    const cx = Math.floor((ptr.worldX - left) / cell);
+    const cy = Math.floor((ptr.worldY - top) / cell);
+    if (cx >= 0 && cy >= 0 && cx < this.board.GRID && cy < this.board.GRID && this.board.cells[cy][cx]) {
+      this.board.pickColor(this.board.cells[cy][cx]);
+      return;
+    }
+
+    // 2) 그 외 → 실제 렌더된 화면 픽셀 색을 추출(맵 배경, 기둥/상자/화분, 다른 캐릭터 등)
+    const r = this.game.renderer;
+    if (r && r.snapshotPixel) {
+      r.snapshotPixel(ptr.x, ptr.y, (color) => {
+        const hex = '#' + [color.red, color.green, color.blue]
+          .map((v) => v.toString(16).padStart(2, '0')).join('');
+        this.board.pickColor(hex);
+      });
+    }
   }
 
   // 그리기 모드에서 캐릭터 위에 격자/칠한 셀/테두리 표시
@@ -439,6 +503,7 @@ export class GameScene extends Phaser.Scene {
 
     socket.on('playerDrew', ({ id, dataURL }) => this.applyDrawing(id, dataURL));
     socket.on('playerWhistled', ({ id, x, y }) => this._onWhistle(id, x, y));
+    socket.on('chatMessage', ({ id, name, text }) => this._addChatMessage(name, text, id === this.myId));
 
     socket.on('playerLeft', ({ id }) => {
       const p = this.players.get(id);
@@ -505,6 +570,65 @@ export class GameScene extends Phaser.Scene {
       badge.textContent = '🫥 숨는이 (HIDER) — 위장하고 숨어라';
       badge.className = 'hider';
     }
+  }
+
+  // ===========================================================================
+  // 채팅 (T 열기 / Enter 전송 / Esc 취소)
+  // ===========================================================================
+  // 입력창은 항상 우상단에 보이고("채팅 - T"), 포커스되면 활성화된다.
+  _setupChat() {
+    this.chatOpen = false;
+    this.chatInput = document.getElementById('chat-input');
+    this.chatLog = document.getElementById('chat-log');
+    if (!this.chatInput) return;
+    this.chatInput.addEventListener('focus', () => this._onChatFocus());
+    this.chatInput.addEventListener('blur', () => this._onChatBlur());
+    this.chatInput.addEventListener('keydown', (e) => {
+      e.stopPropagation(); // Phaser 키보드로 전파 막기
+      if (e.key === 'Enter') this._sendChat();
+      else if (e.key === 'Escape') this.chatInput.blur(); // 취소
+    });
+  }
+
+  _onChatFocus() {
+    this.chatOpen = true;
+    this.input.keyboard.resetKeys();      // 눌린 키 초기화(이동 멈춤)
+    this.input.keyboard.enabled = false;  // 타이핑 중 게임 조작 차단
+    this.chatInput.placeholder = 'Enter 전송 · Esc 취소';
+  }
+
+  _onChatBlur() {
+    this.chatOpen = false;
+    this.chatInput.value = '';
+    this.chatInput.placeholder = '채팅 - T';
+    this.input.keyboard.enabled = true;
+    this.input.keyboard.resetKeys();
+  }
+
+  _openChat() { // T 키
+    if (this.chatOpen || !this.chatInput) return;
+    this.chatInput.focus(); // → _onChatFocus
+  }
+
+  _sendChat() {
+    const text = this.chatInput.value.trim();
+    if (text && this.socket) this.socket.emit('chat', { text });
+    this.chatInput.blur(); // → _onChatBlur (값 비우고 조작 복구)
+  }
+
+  // textContent 사용(HTML 주입 방지)
+  _addChatMessage(name, text, isMe) {
+    if (!this.chatLog) return;
+    const div = document.createElement('div');
+    div.className = 'chat-msg' + (isMe ? ' me' : '');
+    const who = document.createElement('span');
+    who.className = 'who';
+    who.textContent = name;
+    div.appendChild(who);
+    div.appendChild(document.createTextNode(text));
+    this.chatLog.appendChild(div);
+    while (this.chatLog.children.length > 8) this.chatLog.removeChild(this.chatLog.firstChild);
+    window.setTimeout(() => { if (div.parentNode) div.remove(); }, 30000);
   }
 
   // 고양이는 항상 애니메이션(본체로 늘 존재)
@@ -596,7 +720,7 @@ export class GameScene extends Phaser.Scene {
     // [1단계] 이동 + 점프
     //   closed  : 평소 속도, 점프 가능
     //   holding : 캔버스 든 채 아주 느리게 이동(점프 불가, 캔버스 포즈 유지)
-    if (me && (this.drawState === 'closed' || this.drawState === 'holding')) {
+    if (me && !this.chatOpen && (this.drawState === 'closed' || this.drawState === 'holding')) {
       const holding = this.drawState === 'holding';
       const speed = holding ? HOLD_SPEED : SPEED;
       let vx = 0, vy = 0;
@@ -633,16 +757,24 @@ export class GameScene extends Phaser.Scene {
     }
 
     // [2단계] 키 입력
-    //  E = 캔버스 꺼내기/집어넣기 (opening/closing 중엔 무시 → 연타 방지)
-    if (Phaser.Input.Keyboard.JustDown(this.keys.e)) {
+    const isSeeker = this.myRole === 'seeker';
+    //  E = 캔버스 꺼내기/집어넣기 (숨는이 전용 — 술래는 위장 안 함)
+    if (!isSeeker && Phaser.Input.Keyboard.JustDown(this.keys.e)) {
       if (this.drawState === 'closed') this._takeOut('hold');
       else if (this.drawState === 'holding') this._putAway();
     }
-    //  Q = 캔버스에 그리기(편집). closed면 먼저 꺼낸 뒤 편집, drawing이면 적용
+    //  Q = 그리기
+    //   술래: 캐릭터 꾸미기(바로 편집 → 적용하면 코스튬으로 항상 표시)
+    //   숨는이: 캔버스 꺼내 그리기(위장)
     if (Phaser.Input.Keyboard.JustDown(this.keys.q)) {
-      if (this.drawState === 'closed') this._takeOut('draw');
-      else if (this.drawState === 'holding') this._openEditor();
-      else if (this.drawState === 'drawing') this._applyAndHold();
+      if (isSeeker) {
+        if (this.drawState === 'closed') this._openEditor();
+        else if (this.drawState === 'drawing') this._applyAndHold();
+      } else {
+        if (this.drawState === 'closed') this._takeOut('draw');
+        else if (this.drawState === 'holding') this._openEditor();
+        else if (this.drawState === 'drawing') this._applyAndHold();
+      }
     }
     //  R = 휘파람 (이동/들고있을 때만)
     if (Phaser.Input.Keyboard.JustDown(this.keys.r) && me) {
@@ -651,12 +783,33 @@ export class GameScene extends Phaser.Scene {
         if (this.socket) this.socket.emit('whistle', { x: Math.round(me.x), y: Math.round(me.y) });
       }
     }
+    //  T = 채팅 입력창 열기 (그리는 중이 아닐 때)
+    if (Phaser.Input.Keyboard.JustDown(this.keys.t) &&
+        (this.drawState === 'closed' || this.drawState === 'holding')) {
+      this._openChat();
+    }
+    //  그리기 모드 전용: Space=스포이드(누르고 있으면 계속), Z=되돌리기, X=다시
+    if (this.drawState === 'drawing') {
+      if (this.keys.space.isDown && time - (this._lastPick || 0) > 60) {
+        this._lastPick = time;
+        this._eyedropper();
+      }
+      if (Phaser.Input.Keyboard.JustDown(this.keys.z)) this.board.undo();
+      if (Phaser.Input.Keyboard.JustDown(this.keys.x)) this.board.redo();
+    }
 
     // 상태 동기화(약 20Hz): 위치/높이/애니/방향 + 캔버스 들고있음 여부
     if (me && this.socket && time - this.lastSent > 50) {
       this.lastSent = time;
-      const holding = this.drawState === 'holding' || this.drawState === 'drawing';
-      const anim = this.drawState === 'closed' ? me.localAnim : 'cat_canvas';
+      // 술래는 캔버스를 들지 않음 → holding 항상 false, 편집 중엔 idle 로 표시
+      let holding, anim;
+      if (this.myRole === 'seeker') {
+        holding = false;
+        anim = this.drawState === 'closed' ? me.localAnim : 'cat_idle';
+      } else {
+        holding = this.drawState === 'holding' || this.drawState === 'drawing';
+        anim = this.drawState === 'closed' ? me.localAnim : 'cat_canvas';
+      }
       this.socket.emit('move', {
         x: Math.round(me.x), y: Math.round(me.y), angle: this.facingAngle,
         z: Math.round(me.z), anim, flip: me.facingLeft, holding,
@@ -687,14 +840,21 @@ export class GameScene extends Phaser.Scene {
       p.body.setFlipX(inCanvas ? false : p.facingLeft);
       p.body.setDepth(p.y);
 
-      // 위장 그림 오버레이: 몸통 중심에 맞춤(중심 기준), 살짝 위 depth
+      // 그림 오버레이: 몸통 중심에 맞춤, 살짝 위 depth
       p.skin.x = p.x;
       p.skin.y = p.y - REGION_CY - off;
-      p.skin.setFlipX(false); // 그림은 항상 같은 방향(캐릭터 방향 따라 좌우 전환 안 함)
       p.skin.setDepth(p.y + 0.05);
-      // 그림은 "캔버스를 들고 있을 때만" 보인다 (달릴 땐 안 보임)
-      const holdingShown = id === this.myId ? this.drawState === 'holding' : p.holding;
-      p.skin.setVisible(holdingShown && p.hasDrawing);
+      if (p.role === 'seeker') {
+        // 술래: 코스튬처럼 항상 표시 + 캐릭터와 함께 좌우반전 (편집 중인 본인은 숨김)
+        const editingSelf = id === this.myId && this.drawState === 'drawing';
+        p.skin.setVisible(p.hasDrawing && !editingSelf);
+        p.skin.setFlipX(p.facingLeft);
+      } else {
+        // 숨는이: 캔버스를 들고 있을 때만 표시, 방향 고정(안 뒤집힘)
+        const holdingShown = id === this.myId ? this.drawState === 'holding' : p.holding;
+        p.skin.setVisible(holdingShown && p.hasDrawing);
+        p.skin.setFlipX(false);
+      }
 
       // 그림자: 실제 발에서 아래로 살짝 띄움
       p.shadow.x = p.x; p.shadow.y = p.y - FEET_OFF + 12;

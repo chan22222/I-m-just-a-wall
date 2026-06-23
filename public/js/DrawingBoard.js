@@ -26,15 +26,71 @@ export class DrawingBoard {
 
     this.cells = this._blankCells();
 
+    // 되돌리기/다시(undo/redo) 히스토리
+    this.history = [];
+    this.histIndex = -1;
+
     this.toolbar = document.getElementById('paint-toolbar');
     this._buildPalette();
     this._bindButtons();
+    this._updateCurColor();
   }
 
   _blankCells() {
     return Array.from({ length: this.GRID }, () =>
       Array.from({ length: this.GRID }, () => null)
     );
+  }
+
+  // ---- 되돌리기/다시 ------------------------------------------------------
+  _snapshot() {
+    return this.cells.map((row) => row.slice());
+  }
+
+  resetHistory() {
+    this.history = [this._snapshot()];
+    this.histIndex = 0;
+  }
+
+  // 한 획(stroke) 끝났을 때 호출 → 현재 상태를 히스토리에 추가
+  pushHistory() {
+    this.history = this.history.slice(0, this.histIndex + 1); // redo 가지 버림
+    this.history.push(this._snapshot());
+    if (this.history.length > 50) this.history.shift();
+    this.histIndex = this.history.length - 1;
+  }
+
+  undo() {
+    if (this.histIndex <= 0) return false;
+    this.histIndex -= 1;
+    this.cells = this.history[this.histIndex].map((row) => row.slice());
+    return true;
+  }
+
+  redo() {
+    if (this.histIndex >= this.history.length - 1) return false;
+    this.histIndex += 1;
+    this.cells = this.history[this.histIndex].map((row) => row.slice());
+    return true;
+  }
+
+  // 스포이드: 색을 현재 색으로 지정 + 팔레트 강조
+  pickColor(hex) {
+    if (!hex) return;
+    this.color = hex;
+    this.colorNum = parseInt(hex.slice(1), 16);
+    const wrap = document.getElementById('palette');
+    if (wrap) {
+      wrap.querySelectorAll('.swatch').forEach((s) => {
+        s.classList.toggle('active', (s.title || '').toLowerCase() === hex.toLowerCase());
+      });
+    }
+    this._updateCurColor();
+  }
+
+  _updateCurColor() {
+    const el = document.getElementById('cur-color');
+    if (el) el.style.background = this.color;
   }
 
   isOpen() {
@@ -49,7 +105,7 @@ export class DrawingBoard {
   // 기존 그림(dataURL)을 16x16 cells 로 복원 → 편집/지우기 가능
   loadFromDataURL(dataURL) {
     this.clearCells();
-    if (!dataURL) return;
+    if (!dataURL) { this.resetHistory(); return; }
     const img = new Image();
     img.onload = () => {
       const c = document.createElement('canvas');
@@ -68,6 +124,7 @@ export class DrawingBoard {
           }
         }
       }
+      this.resetHistory(); // 불러온 그림을 되돌리기 기준점으로
     };
     img.src = dataURL;
   }
@@ -127,17 +184,25 @@ export class DrawingBoard {
         this.colorNum = parseInt(c.slice(1), 16);
         wrap.querySelectorAll('.swatch').forEach((s) => s.classList.remove('active'));
         sw.classList.add('active');
+        this._updateCurColor();
       });
       wrap.appendChild(sw);
     });
   }
 
   _bindButtons() {
-    document.getElementById('btn-clear').addEventListener('click', () => this.clearCells());
+    document.getElementById('btn-clear').addEventListener('click', () => { this.clearCells(); this.pushHistory(); });
     document.getElementById('btn-apply').addEventListener('click', () => this.onApply && this.onApply());
     document.getElementById('btn-close').addEventListener('click', () => this.onClose && this.onClose());
+    const brushVal = document.getElementById('brush-val');
+    if (brushVal) brushVal.textContent = this.brush;
     document.getElementById('brush-size').addEventListener('input', (e) => {
       this.brush = parseInt(e.target.value, 10);
+      if (brushVal) brushVal.textContent = this.brush;
     });
+    const undoBtn = document.getElementById('btn-undo');
+    if (undoBtn) undoBtn.addEventListener('click', () => this.undo());
+    const redoBtn = document.getElementById('btn-redo');
+    if (redoBtn) redoBtn.addEventListener('click', () => this.redo());
   }
 }

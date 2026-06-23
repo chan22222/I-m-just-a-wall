@@ -130,6 +130,20 @@ io.on('connection', (socket) => {
     io.to(currentRoomId).emit('playerWhistled', { id: socket.id, x, y });
   });
 
+  // -------------------------------------------------------------------------
+  // 채팅: 방 전체(본인 포함)에 중계
+  // -------------------------------------------------------------------------
+  socket.on('chat', ({ text } = {}) => {
+    if (!currentRoomId) return;
+    const room = rooms.get(currentRoomId);
+    if (!room) return;
+    const p = room.players.get(socket.id);
+    if (!p) return;
+    const msg = String(text || '').trim().slice(0, 120);
+    if (!msg) return;
+    io.to(currentRoomId).emit('chatMessage', { id: socket.id, name: p.name, text: msg });
+  });
+
   socket.on('disconnect', () => {
     if (!currentRoomId) return;
     const room = rooms.get(currentRoomId);
