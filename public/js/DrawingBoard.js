@@ -82,7 +82,7 @@ export class DrawingBoard {
     const wrap = document.getElementById('palette');
     if (wrap) {
       wrap.querySelectorAll('.swatch').forEach((s) => {
-        s.classList.toggle('active', (s.title || '').toLowerCase() === hex.toLowerCase());
+        s.classList.toggle('active', (s.dataset.tip || '').toLowerCase() === hex.toLowerCase());
       });
     }
     this._updateCurColor();
@@ -142,14 +142,49 @@ export class DrawingBoard {
     return this.cells.some((row) => row.some((c) => c));
   }
 
-  // GameScene 이 포인터→셀 변환 후 호출
-  paint(cx, cy, erase) {
-    const r = this.brush - 1;
-    for (let y = cy - r; y <= cy + r; y++) {
-      for (let x = cx - r; x <= cx + r; x++) {
-        if (x < 0 || y < 0 || x >= this.GRID || y >= this.GRID) continue;
-        this.cells[y][x] = erase ? null : this.color;
+  // 원형 브러시 오프셋(짝수 크기는 픽셀 사이 중심) — SPRITFY 방식
+  _brushOffsets(size) {
+    if (size <= 1) return [[0, 0]];
+    const offs = [];
+    const r = size / 2;
+    const rSq = r * r;
+    const even = size % 2 === 0;
+    const lo = even ? Math.ceil(-r) + 1 : Math.ceil(-r);
+    const hi = even ? Math.floor(r) : Math.floor(r);
+    for (let dy = lo; dy <= hi; dy++) {
+      for (let dx = lo; dx <= hi; dx++) {
+        const ddx = even ? dx - 0.5 : dx;
+        const ddy = even ? dy - 0.5 : dy;
+        if (ddx * ddx + ddy * ddy <= rSq) offs.push([dx, dy]);
       }
+    }
+    return offs;
+  }
+
+  // 현재 브러시 오프셋(크기별 캐시)
+  brushOffsets() {
+    if (this._offSize !== this.brush) {
+      this._off = this._brushOffsets(this.brush);
+      this._offSize = this.brush;
+    }
+    return this._off;
+  }
+
+  // 브러시 크기 설정(1~16) + 슬라이더/숫자 동기화 — [ ] 키와 슬라이더 공용
+  setBrush(n) {
+    this.brush = Math.max(1, Math.min(16, n | 0));
+    const slider = document.getElementById('brush-size');
+    if (slider) slider.value = String(this.brush);
+    const val = document.getElementById('brush-val');
+    if (val) val.textContent = this.brush;
+  }
+
+  // GameScene 이 포인터→셀 변환 후 호출 (원형 브러시로 칠함)
+  paint(cx, cy, erase) {
+    for (const [dx, dy] of this.brushOffsets()) {
+      const x = cx + dx, y = cy + dy;
+      if (x < 0 || y < 0 || x >= this.GRID || y >= this.GRID) continue;
+      this.cells[y][x] = erase ? null : this.color;
     }
   }
 
@@ -178,7 +213,7 @@ export class DrawingBoard {
       const sw = document.createElement('div');
       sw.className = 'swatch' + (c === this.color ? ' active' : '');
       sw.style.background = c;
-      sw.title = c;
+      sw.dataset.tip = c;
       sw.addEventListener('click', () => {
         this.color = c;
         this.colorNum = parseInt(c.slice(1), 16);
@@ -197,8 +232,7 @@ export class DrawingBoard {
     const brushVal = document.getElementById('brush-val');
     if (brushVal) brushVal.textContent = this.brush;
     document.getElementById('brush-size').addEventListener('input', (e) => {
-      this.brush = parseInt(e.target.value, 10);
-      if (brushVal) brushVal.textContent = this.brush;
+      this.setBrush(parseInt(e.target.value, 10));
     });
     const undoBtn = document.getElementById('btn-undo');
     if (undoBtn) undoBtn.addEventListener('click', () => this.undo());

@@ -47,11 +47,13 @@ export class GameScene extends Phaser.Scene {
   }
 
   preload() {
-    this.load.spritesheet('cat_idle', 'character/1_Cat_Idle-Sheet.png', { frameWidth: 32, frameHeight: 32 });
-    this.load.spritesheet('cat_run', 'character/2_Cat_Run-Sheet.png', { frameWidth: 32, frameHeight: 32 });
-    this.load.spritesheet('cat_jump', 'character/3_Cat_Jump-Sheet.png', { frameWidth: 32, frameHeight: 32 });
-    this.load.spritesheet('cat_fall', 'character/4_Cat_Fall-Sheet.png', { frameWidth: 32, frameHeight: 32 });
-    this.load.spritesheet('cat_canvas', 'character/5_Cat_Canvas-Sheet.png', { frameWidth: 32, frameHeight: 32 });
+    const P = 'character/SEEKER/';
+    this.load.spritesheet('cat_idle', P + '1_Cat_Idle-Sheet.png', { frameWidth: 32, frameHeight: 32 });
+    this.load.spritesheet('cat_run', P + '2_Cat_Run-Sheet.png', { frameWidth: 32, frameHeight: 32 });
+    this.load.spritesheet('cat_jump', P + '3_Cat_Jump-Sheet.png', { frameWidth: 32, frameHeight: 32 });
+    this.load.spritesheet('cat_fall', P + '4_Cat_Fall-Sheet.png', { frameWidth: 32, frameHeight: 32 });
+    this.load.spritesheet('cat_canvas', P + '5_Cat_Canvas-Sheet.png', { frameWidth: 32, frameHeight: 32 });
+    this.load.spritesheet('seeker_run', P + '6_Cat_seekermoving-Sheet.png', { frameWidth: 32, frameHeight: 32 });
   }
 
   create() {
@@ -85,7 +87,10 @@ export class GameScene extends Phaser.Scene {
     this.keys = this.input.keyboard.addKeys({
       w: 'W', a: 'A', s: 'S', d: 'D',
       q: 'Q', e: 'E', r: 'R', t: 'T', space: 'SPACE',
-      z: 'Z', x: 'X', // 그리기 되돌리기/다시
+      z: 'Z', x: 'X',                 // 그리기 되돌리기/다시
+      esc: 'ESC',                     // 그리기 취소
+      openBracket: 'OPEN_BRACKET',    // [ 브러시 작게
+      closeBracket: 'CLOSED_BRACKET', // ] 브러시 크게
     }, false); // capture 끔 → 채팅 입력창에 글자가 정상 입력되도록
 
     this._setupChat();
@@ -137,6 +142,7 @@ export class GameScene extends Phaser.Scene {
     const A = this.anims;
     if (!A.exists('cat_idle')) A.create({ key: 'cat_idle', frames: A.generateFrameNumbers('cat_idle', { start: 0, end: 7 }), frameRate: 8, repeat: -1 });
     if (!A.exists('cat_run')) A.create({ key: 'cat_run', frames: A.generateFrameNumbers('cat_run', { start: 0, end: 9 }), frameRate: 16, repeat: -1 });
+    if (!A.exists('seeker_run')) A.create({ key: 'seeker_run', frames: A.generateFrameNumbers('seeker_run', { start: 0, end: 7 }), frameRate: 14, repeat: -1 }); // 술래 걸음
     if (!A.exists('cat_jump')) A.create({ key: 'cat_jump', frames: A.generateFrameNumbers('cat_jump', { start: 0, end: 3 }), frameRate: 12, repeat: 0 });
     if (!A.exists('cat_fall')) A.create({ key: 'cat_fall', frames: A.generateFrameNumbers('cat_fall', { start: 0, end: 3 }), frameRate: 12, repeat: 0 });
     // 캔버스 꺼내기(그리기 진입). 한 번만 재생하고 마지막 프레임(캔버스) 유지
@@ -464,6 +470,23 @@ export class GameScene extends Phaser.Scene {
     // 테두리(그릴 수 있는 영역 표시)
     g.lineStyle(lw * 2, 0xffe27a, 0.95);
     g.strokeRect(left, top, size, size);
+
+    // 브러시 미리보기: 커서 위치에 칠해질 영역을 반투명으로(스포이드 모드 제외)
+    if (!this._eyedropMode) {
+      const ptr = this.input.activePointer;
+      const hx = Math.floor((ptr.worldX - left) / cell);
+      const hy = Math.floor((ptr.worldY - top) / cell);
+      if (hx >= 0 && hy >= 0 && hx < GRID && hy < GRID) {
+        g.fillStyle(parseInt(this.board.color.slice(1), 16), 0.5);
+        for (const [dx, dy] of this.board.brushOffsets()) {
+          const x = hx + dx, y = hy + dy;
+          if (x < 0 || y < 0 || x >= GRID || y >= GRID) continue;
+          g.fillRect(left + x * cell, top + y * cell, cell, cell);
+        }
+        g.lineStyle(lw * 1.5, 0xffffff, 0.85); // 중심 칸 강조
+        g.strokeRect(left + hx * cell, top + hy * cell, cell, cell);
+      }
+    }
   }
 
   // ===========================================================================
@@ -749,7 +772,8 @@ export class GameScene extends Phaser.Scene {
           if (me.z <= 0) { me.z = 0; me.zVel = 0; }
         }
         if (me.z > 0) me.localAnim = me.zVel > 0 ? 'cat_jump' : 'cat_fall';
-        else me.localAnim = moving ? 'cat_run' : 'cat_idle';
+        else if (moving) me.localAnim = this.myRole === 'seeker' ? 'seeker_run' : 'cat_run';
+        else me.localAnim = 'cat_idle';
       }
 
       const ptr = this.input.activePointer;
@@ -788,14 +812,17 @@ export class GameScene extends Phaser.Scene {
         (this.drawState === 'closed' || this.drawState === 'holding')) {
       this._openChat();
     }
-    //  그리기 모드 전용: Space=스포이드(누르고 있으면 계속), Z=되돌리기, X=다시
+    //  그리기 모드 전용 키
     if (this.drawState === 'drawing') {
       if (this.keys.space.isDown && time - (this._lastPick || 0) > 60) {
-        this._lastPick = time;
+        this._lastPick = time;       // Space 누르고 있으면 스포이드 지속
         this._eyedropper();
       }
       if (Phaser.Input.Keyboard.JustDown(this.keys.z)) this.board.undo();
       if (Phaser.Input.Keyboard.JustDown(this.keys.x)) this.board.redo();
+      if (Phaser.Input.Keyboard.JustDown(this.keys.openBracket)) this.board.setBrush(this.board.brush - 1);
+      if (Phaser.Input.Keyboard.JustDown(this.keys.closeBracket)) this.board.setBrush(this.board.brush + 1);
+      if (Phaser.Input.Keyboard.JustDown(this.keys.esc)) this._cancelToHold(); // 취소
     }
 
     // 상태 동기화(약 20Hz): 위치/높이/애니/방향 + 캔버스 들고있음 여부

@@ -42,22 +42,29 @@
   ====================================================================== -->
   <div id="paint-toolbar" class="hidden">
     <div class="pt-row">
-      <div id="cur-color" class="cur-color" title="현재 색"></div>
-      <div class="palette" id="palette"></div>
-      <span class="pt-div"></span>
-      <label class="pt-brush" title="브러시 크기">
+      <div class="pt-group">
+        <div id="cur-color" class="cur-color" data-tip="현재 색"></div>
+        <div class="palette" id="palette"></div>
+      </div>
+      <label class="pt-brush" data-tip="브러시 크기 · [ / ] 키">
         <span class="pt-ico">🖌️</span>
-        <input id="brush-size" type="range" min="1" max="8" value="1" />
+        <input id="brush-size" type="range" min="1" max="16" value="1" />
         <span id="brush-val" class="pt-val">1</span>
       </label>
-      <span class="pt-div"></span>
-      <button id="btn-pick" class="paint-btn" title="스포이드 (누르고 있기)">💧 스포이드 <kbd>Space</kbd></button>
-      <button id="btn-undo" class="paint-btn">↶ 되돌리기 <kbd>Z</kbd></button>
-      <button id="btn-redo" class="paint-btn">↷ 다시 <kbd>X</kbd></button>
-      <span class="pt-div"></span>
-      <button id="btn-clear" class="paint-btn danger">초기화</button>
-      <button id="btn-close" class="paint-btn">취소 <kbd>Esc</kbd></button>
-      <button id="btn-apply" class="paint-btn primary">적용 <kbd>Q</kbd></button>
+      <div class="pt-group">
+        <button id="btn-pick" class="paint-btn icon" data-tip="스포이드 · Space">💧</button>
+        <button id="btn-undo" class="paint-btn icon" data-tip="되돌리기 · Z">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z"/></svg>
+        </button>
+        <button id="btn-redo" class="paint-btn icon" data-tip="다시 · X">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M18.4 10.6C16.55 8.99 14.15 8 11.5 8c-4.65 0-8.58 3.03-9.96 7.22L3.9 16c1.05-3.19 4.05-5.5 7.6-5.5 1.95 0 3.73.72 5.12 1.88L13 16h9V7l-3.6 3.6z"/></svg>
+        </button>
+      </div>
+      <div class="pt-group">
+        <button id="btn-clear" class="paint-btn danger" data-tip="전체 지우기">초기화</button>
+        <button id="btn-close" class="paint-btn" data-tip="취소 · Esc">취소</button>
+        <button id="btn-apply" class="paint-btn primary" data-tip="적용 · Q">적용</button>
+      </div>
     </div>
   </div>
 

@@ -130,9 +130,16 @@ html, body {
 .pt-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 14px;            /* 그룹 사이 간격 */
   flex-wrap: wrap;
   justify-content: center;
+}
+/* 한 세트로 묶어 줄바꿈 시 그룹 단위로 내려감(내부는 안 쪼개짐) */
+.pt-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
 }
 .pt-div {
   width: 1px;
@@ -184,39 +191,71 @@ html, body {
 }
 
 .paint-btn {
-  height: 42px;
-  min-width: 52px;
-  padding: 4px 11px;
+  height: 36px;
+  padding: 0 13px;
   border-radius: 9px;
   border: 1px solid rgba(255, 255, 255, 0.15);
   background: #2a3040;
   color: #e7e9ee;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
   display: inline-flex;
-  flex-direction: column;   /* 라벨 위, 키캡 아래 */
   align-items: center;
   justify-content: center;
-  gap: 3px;
   transition: background 0.1s, border-color 0.1s, transform 0.06s;
 }
 .paint-btn:hover { background: #353c4f; }
 .paint-btn:active { transform: translateY(1px); }
-.paint-btn.icon { width: 34px; padding: 0; font-size: 16px; }
+.paint-btn.icon { width: 36px; padding: 0; font-size: 17px; }
+.paint-btn svg { width: 18px; height: 18px; display: block; pointer-events: none; }
 .paint-btn.primary { background: #2f6df0; border-color: #2f6df0; }
 .paint-btn.primary:hover { background: #3f7dff; }
 .paint-btn.danger { color: #ff9b9b; border-color: rgba(255, 107, 107, 0.35); }
 .paint-btn.danger:hover { background: #3a2630; }
 .paint-btn.active { background: #1f6d6d; border-color: #3bd1c4; color: #fff; } /* 스포이드 찍기 모드 */
-.paint-btn kbd {
-  font-family: monospace;
-  font-size: 9px;
-  line-height: 1;
-  background: rgba(0, 0, 0, 0.4);
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  border-radius: 4px;
-  padding: 2px 5px;
-  color: #cfd4e0;
+
+/* ---- 커스텀 말풍선 툴팁 (마우스 올리면 위로 뜸) ---- */
+[data-tip] { position: relative; }
+[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 9px);
+  left: 50%;
+  transform: translateX(-50%) translateY(4px);
+  background: #0f1219;
+  color: #e7e9ee;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.55);
+  z-index: 100;
+}
+[data-tip]::before {
+  content: "";
+  position: absolute;
+  bottom: calc(100% + 3px);
+  left: 50%;
+  transform: translateX(-50%) translateY(4px);
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 6px 6px 0 6px;
+  border-color: #0f1219 transparent transparent transparent; /* 아래를 가리키는 꼬리 ▼ */
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  z-index: 101;
+}
+[data-tip]:hover::after,
+[data-tip]:hover::before {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
 }
