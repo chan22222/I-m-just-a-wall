@@ -44,13 +44,31 @@ html, body {
   background: rgba(15, 18, 26, 0.8);
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 999px;
-  padding: 6px 18px;
-  font-weight: 600;
-  font-size: 14px;
+  padding: 8px 18px;       /* 채팅 입력과 높이 맞춤 */
+  font-weight: 700;
+  font-size: 13px;
   z-index: 20;
 }
 #role-badge.seeker { color: #ff6b6b; border-color: rgba(255, 107, 107, 0.5); }
 #role-badge.hider  { color: #6bff9e; border-color: rgba(107, 255, 158, 0.5); }
+
+/* 배지는 좌상단이라 말풍선을 아래쪽으로(꼬리 ▲ 위로) + 왼쪽 정렬 */
+#role-badge[data-tip]::after,
+#role-badge[data-tip]:hover::after {
+  bottom: auto;
+  top: calc(100% + 9px);
+  left: 0;
+  transform: none;
+}
+#role-badge[data-tip]::before,
+#role-badge[data-tip]:hover::before {
+  bottom: auto;
+  top: calc(100% + 3px);
+  left: 22px;
+  transform: none;
+  border-width: 0 6px 6px 6px;
+  border-color: transparent transparent #0f1219 transparent;
+}
 
 /* ---- 채팅 (우상단) ---- */
 #chat {

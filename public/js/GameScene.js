@@ -637,10 +637,12 @@ export class GameScene extends Phaser.Scene {
     const badge = document.getElementById('role-badge');
     if (!badge) return;
     if (this.myRole === 'seeker') {
-      badge.textContent = '🔦 술래 (SEEKER) — 부채꼴 시야로 찾아라';
+      badge.textContent = 'SEEKER';
+      badge.dataset.tip = '숨어있는 HIDER를 찾으세요';
       badge.className = 'seeker';
     } else {
-      badge.textContent = '🫥 숨는이 (HIDER) — 위장하고 숨어라';
+      badge.textContent = 'HIDER';
+      badge.dataset.tip = '위장하고 숨으세요';
       badge.className = 'hider';
     }
   }
