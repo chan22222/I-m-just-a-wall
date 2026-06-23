@@ -51,7 +51,7 @@ function assignRole(room) {
 }
 
 // 월드 크기(클라이언트와 동일하게 유지). 스폰 위치 계산용.
-const WORLD = { width: 1600, height: 1200 };
+const WORLD = { width: 1672, height: 941 }; // map01.png 원본 크기(1:1)
 
 io.on('connection', (socket) => {
   let currentRoomId = null;

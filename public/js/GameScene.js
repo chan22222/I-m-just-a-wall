@@ -78,6 +78,8 @@ export class GameScene extends Phaser.Scene {
     this.load.image('gun_idle', S + 'gun_idle.png');
     this.load.image('gun_moving', S + 'gun_moving.png');
     this.load.image('gun_shot', S + '7_Cat_gun_shot.png');
+    // 맵 배경 이미지
+    this.load.image('map01', 'map/map01.png');
     // 숨는이: HIDER/<색> 3종(gray/lemon/orange), 구조 동일
     HIDER_SETS.forEach((c) => {
       const H = 'character/HIDER/' + c + '/';
@@ -91,7 +93,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   create() {
-    this.world = { width: 1600, height: 1200 };
+    this.world = { width: 1672, height: 941 }; // map01.png 원본 크기(1:1, 확대 안 함 → 깨짐 없음)
     this.players = new Map();
     this.props = [];
     this.myId = null;
@@ -115,9 +117,9 @@ export class GameScene extends Phaser.Scene {
     this.gameEnded = false;
 
     this._makeAnims();
-    this._makePropTextures();
+    this._makePropTextures(); // 이펙트 파티클(fx-dot) 등 텍스처 생성
     this._drawBackground();
-    this._spawnProps();
+    // 맵 이미지를 쓰므로 절차적 장식(기둥/상자/화분)은 생성하지 않음
 
     this.cameras.main.setBounds(0, 0, this.world.width, this.world.height);
     this.cameraTarget = this.add.zone(this.world.width / 2, this.world.height / 2, 1, 1);
@@ -152,6 +154,8 @@ export class GameScene extends Phaser.Scene {
     this.drawGfx = this.add.graphics().setDepth(DEPTH_DRAW).setVisible(false);
     // 재장전 바(로컬 술래 발밑) — 발사 쿨다운 진행 표시
     this.reloadGfx = this.add.graphics().setDepth(DEPTH_EMOJI - 2).setVisible(false);
+    // 잡힌 사람의 남은 그림 테두리(위치 표시) — 매 프레임 다시 그림
+    this.deadGfx = this.add.graphics().setDepth(DEPTH_FOG - 1);
 
     this._lastCell = null;      // 빠르게 움직일 때 점 끊김 방지용(직전 칠한 셀)
     this._strokeDirty = false;  // 이번 스트로크에서 실제로 칠했는지
@@ -252,17 +256,14 @@ export class GameScene extends Phaser.Scene {
   }
 
   _drawBackground() {
-    const g = this.add.graphics().setDepth(DEPTH_BG);
-    g.fillStyle(0x171b24, 1);
-    g.fillRect(0, 0, this.world.width, this.world.height);
-    g.lineStyle(1, 0x222838, 1);
-    const step = 64;
-    for (let x = 0; x <= this.world.width; x += step) g.lineBetween(x, 0, x, this.world.height);
-    for (let y = 0; y <= this.world.height; y += step) g.lineBetween(0, y, this.world.width, y);
-    // 테두리: 선 두께(6)의 절반만큼 안쪽으로 들여 그려야 왼쪽/위 변이 카메라 밖으로
-    // 잘리지 않고 온전히 보인다.
-    g.lineStyle(6, 0x3a4356, 1);
-    g.strokeRect(3, 3, this.world.width - 6, this.world.height - 6);
+    // 맵 이미지(map01)를 월드 전체에 배치. 2배 확대 시 nearest(전역 pixelArt)면 계단/깨짐이
+    // 생기므로 맵 텍스처만 LINEAR(부드럽게)로 필터링한다(캐릭터 도트는 nearest 유지).
+    const tex = this.textures.get('map01');
+    if (tex) tex.setFilter(Phaser.Textures.FilterMode.LINEAR);
+    this.add.image(0, 0, 'map01')
+      .setOrigin(0, 0)
+      .setDisplaySize(this.world.width, this.world.height)
+      .setDepth(DEPTH_BG);
   }
 
   _spawnProps() {
@@ -1324,6 +1325,7 @@ export class GameScene extends Phaser.Scene {
     }
 
     // ★ 2.5D 렌더
+    if (this.deadGfx) this.deadGfx.clear(); // 잡힌 그림 테두리는 매 프레임 다시 그림
     // 술래의 정렬 깊이(=술래 y). 위장(그림 표시)한 숨는이만 이 아래로 눌러 술래가 항상 위.
     let seekerY = null;
     this.players.forEach((pp) => { if (pp.role === 'seeker' && !pp.caught) seekerY = pp.y; });
@@ -1349,6 +1351,12 @@ export class GameScene extends Phaser.Scene {
           p.skin.setFlipX(false);
           p.skin.setDepth(p.y); // 그림은 뒤
           p.skin.setVisible(true);
+          // 남은 그림 테두리(위치 표시): 그림 영역에 프레임
+          if (this.deadGfx) {
+            const w = p.regionW * sc, h = p.regionH * sc;
+            const bx = p.x - w / 2, by = (p.y - p.regionCY * sc) - h / 2;
+            this.deadGfx.lineStyle(2, 0xffd83b, 0.5).strokeRect(bx, by, w, h); // 노란 테두리(투명도 50%)
+          }
           // 시체: 그림 아래로 내리되 머리만 그림 밑단과 살짝 겹치게
           const drawBottom = p.y - p.regionCY * sc + (p.regionH * sc) / 2;
           corpseY = drawBottom - 58 + HEAD_OFF * sc; // 더 많이 겹침
