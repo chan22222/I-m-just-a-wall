@@ -2,6 +2,7 @@
 // main.js  -  [1단계] Phaser 3 기본 세팅 (부팅)
 // =============================================================================
 import { GameScene } from './GameScene.js';
+import { ChromaticAberrationPostFX } from './PostFX.js';
 
 const config = {
   type: Phaser.AUTO,
@@ -14,6 +15,8 @@ const config = {
     width: window.innerWidth,
     height: window.innerHeight,
   },
+  // 커스텀 포스트 셰이더(색수차) 등록 — 카메라에서 setPostPipeline 으로 사용
+  pipeline: [ChromaticAberrationPostFX],
   scene: [GameScene],
 };
 

@@ -11,6 +11,7 @@
 
 import { DrawingBoard } from './DrawingBoard.js';
 import { VoiceChat } from './VoiceChat.js';
+import { ChromaticAberrationPostFX } from './PostFX.js';
 
 const SPEED = 240;        // 이동 속도(px/s)
 const SEEKER_SPEED = 360; // 술래 이동 속도(1.5배)
@@ -188,7 +189,8 @@ export class GameScene extends Phaser.Scene {
     const pickBtn = document.getElementById('btn-pick');
     if (pickBtn) pickBtn.addEventListener('click', () => this._setEyedrop(!this._eyedropMode));
 
-    this._setupVision();   // [4단계]
+    // 안개(시야 제한) 제거 — 술래도 맵 전체를 봄. 대신 포스트 셰이더로 분위기 연출.
+    this._setupPostFX();
     this._setupNetwork();  // [3단계]
 
     // 음성채팅 (V 마이크 / B 참여 / 호버 슬라이더 볼륨) — 소켓 생성 후 연결
@@ -284,6 +286,27 @@ export class GameScene extends Phaser.Scene {
   // ===========================================================================
   // [4단계] 시야 시스템
   // ===========================================================================
+  // 포스트 셰이더(ChronosOverload 스타일): Vignette + Bloom(내장) + Chromatic Aberration(커스텀)
+  _setupPostFX() {
+    const cam = this.cameras.main;
+    if (!cam || !cam.postFX) return; // WebGL 아니면 건너뜀(캔버스 폴백)
+    this._chromaBase = 0.02; // 평소 아주 약한 색수차
+    cam.postFX.addVignette(0.5, 0.5, 0.9, 0.45);     // 가장자리 어둡게
+    cam.postFX.addBloom(0xffffff, 1, 1, 1, 0.55, 4); // 은은한 발광
+    cam.setPostPipeline(ChromaticAberrationPostFX);  // 색수차(커스텀)
+    const ca = cam.getPostPipeline(ChromaticAberrationPostFX);
+    this.chroma = Array.isArray(ca) ? ca[0] : ca;
+    if (this.chroma) this.chroma.intensity = this._chromaBase;
+  }
+
+  // 순간 색수차 펄스(발사/피격 등) → 기본값으로 부드럽게 복귀
+  _pulseChroma(v) {
+    if (!this.chroma) return;
+    this.tweens.killTweensOf(this.chroma);
+    this.chroma.intensity = v;
+    this.tweens.add({ targets: this.chroma, intensity: this._chromaBase, duration: 280, ease: 'Quad.easeOut' });
+  }
+
   _setupVision() {
     const W = this.scale.gameSize.width;
     const H = this.scale.gameSize.height;
@@ -536,6 +559,7 @@ export class GameScene extends Phaser.Scene {
     me.facingLeft = aimX < ox;                   // 쏘는 방향(커서)을 바라보게 좌우 전환
     me._kbx = -ux * SHOT_KNOCKBACK;              // 발사 반동: 뒤로 살짝 밀림
     me._kby = -uy * SHOT_KNOCKBACK;
+    this._pulseChroma(0.09);                     // 발사 순간 색수차 펄스
     if (this.socket) this.socket.emit('shoot');  // 다른 클라이언트에도 발사 포즈 표시
 
     this._slowUntil = now + SLOW_MS; // 발사 후 아주 짧은 둔화(매 발)
@@ -641,6 +665,7 @@ export class GameScene extends Phaser.Scene {
     if (!p) return;
     p.caught = true; // 렌더 루프에서 시체 + 그림 표시
     this._killEffect(p.x, p.y - 61 * p.scale); // 처치 폭발(EFFECT 시트)
+    this._pulseChroma(0.16); // 처치 순간 색수차 강하게
     if (id === this.myId) {
       this.caught = true;
       // 그리기 중이었으면 정리(줌/도구막대 닫기)
@@ -777,7 +802,6 @@ export class GameScene extends Phaser.Scene {
       players.forEach((p) => this._addPlayer(p));
       this._updateRoleBadge();
       this._buildHud();
-      if (role === 'seeker') this.fog.setVisible(true);
     });
 
     socket.on('playerJoined', (p) => this._addPlayer(p));
@@ -1495,20 +1519,6 @@ export class GameScene extends Phaser.Scene {
     // [2단계] 그리기 오버레이(캐릭터 위 격자) — 'drawing' 상태에서만
     if (this.drawState === 'drawing' && me) {
       this._renderDrawOverlay(me);
-    }
-
-    // [4단계] 술래 시야 + 안개
-    //  - 평소 줌(≈1): 안개 보이고 부채꼴 시야 갱신
-    //  - 그리기 줌인 중: 시야 고정. 충분히 확대(≈최대)됐을 때만 안개를 걷음
-    //    → 주변이 화면 밖으로 벗어났을 때만 걷어, 맵은 안 드러나고 캐릭터만 잘 보이게
-    if (this.myRole === 'seeker' && me && this.fog) {
-      const zoom = this.cameras.main.zoom;
-      if (zoom <= 1.05) {
-        this.fog.setVisible(true);
-        this._updateVision(me);
-      } else {
-        this.fog.setVisible(zoom < DRAW_ZOOM * 0.85); // 거의 다 확대되면 안개 숨김
-      }
     }
   }
 }
