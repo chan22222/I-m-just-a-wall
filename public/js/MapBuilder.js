@@ -122,8 +122,8 @@ export class MapBuilder {
     const tooClose = (px, py, d) => placed.some((q) => Math.hypot(q.x - px, q.y - py) < d);
     const trees = ['tree_m', 'tree_a', 'tree_s', 'tree_m'];
     const props = ['bush', 'bush2', 'stump', 'log', 'rock_l', 'rock_s', 'rock_l'];
-    const treeWant = Math.min(60, Math.floor(inner.length * 0.06));
-    const propWant = Math.min(34, Math.floor(inner.length * 0.035));
+    const treeWant = Math.min(95, Math.floor(inner.length * 0.09));
+    const propWant = Math.min(56, Math.floor(inner.length * 0.055));
     const pick = () => inner[Math.floor(rnd() * inner.length)];
 
     for (let i = 0, tries = 0; i < treeWant && tries < treeWant * 16; tries++) {
@@ -147,7 +147,7 @@ export class MapBuilder {
 
     // 장식(버섯/꽃/해바라기) — 충돌 없음
     const decos = ['mush_r', 'mush_p', 'sunflower', 'flower_p', 'flower_y', 'flower_p', 'flower_y'];
-    const decoWant = Math.min(44, Math.floor(inner.length * 0.045));
+    const decoWant = Math.min(64, Math.floor(inner.length * 0.065));
     for (let i = 0, tries = 0; i < decoWant && tries < decoWant * 16; tries++) {
       const c = pick(); if (!c) break;
       const px = (c.tx + 0.5) * T, py = (c.ty + 1) * T;
@@ -171,12 +171,26 @@ export class MapBuilder {
       this._place((b.tx + 0.5) * T, (b.ty + 1.2) * T, 'obj_bridge', 'bridge_h', SCALE, -990);
     });
 
-    // 보물상자 — 포인트 장식
-    for (let i = 0, tries = 0; i < 5 && tries < 60; tries++) {
+    // 보물상자 — 포인트 장식(드물게)
+    for (let i = 0, tries = 0; i < 2 && tries < 60; tries++) {
       const c = pick(); if (!c) break;
       const px = (c.tx + 0.5) * T, py = (c.ty + 1) * T;
       if (tooClose(px, py, T * 1.5)) continue;
       this._place(px, py, 'obj_chest', 'chest0', 3);
+      placed.push({ x: px, y: py }); i++;
+    }
+
+    // 물속 바위(장식) — 물은 이미 통과 불가라 충돌 없이 점점이 배치
+    const waterCells = [];
+    for (let ty = 4; ty < ROWS - 4; ty++) for (let tx = 4; tx < COLS - 4; tx++) {
+      if (!land[ty][tx]) waterCells.push({ tx, ty });
+    }
+    const waterRockWant = Math.min(288, Math.floor(waterCells.length * 0.072));
+    for (let i = 0, tries = 0; i < waterRockWant && tries < waterRockWant * 16; tries++) {
+      const c = waterCells[Math.floor(rnd() * waterCells.length)]; if (!c) break;
+      const px = (c.tx + 0.5) * T, py = (c.ty + 1) * T;
+      if (tooClose(px, py, T * 1.8)) continue;
+      this._obj(px, py, rnd() < 0.82 ? 'rock_l' : 'rock_s'); // 큰바위 위주
       placed.push({ x: px, y: py }); i++;
     }
 
