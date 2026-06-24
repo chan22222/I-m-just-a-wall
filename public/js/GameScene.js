@@ -14,8 +14,8 @@ import { VoiceChat } from './VoiceChat.js';
 import { ChromaticAberrationPostFX } from './PostFX.js';
 import { MapBuilder } from './MapBuilder.js';
 
-const SPEED = 240;        // 이동 속도(px/s)
-const SEEKER_SPEED = 360; // 술래 이동 속도(1.5배)
+const SPEED = 300;        // 이동 속도(px/s)
+const SEEKER_SPEED = 360; // 술래 이동 속도
 const HOLD_SPEED = 55;    // 캔버스 든 채 이동 속도(매우 느림)
 const JUMP_VEL = 380;     // 점프 초기 상승 속도(z, px/s)
 const GRAVITY = 1200;     // 중력(z, px/s^2)
@@ -101,7 +101,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   create() {
-    this.world = { width: 3344, height: 1882 }; // map01.png(1672×941) 2배(NEAREST, 정수 배율 → 깔끔)
+    this.world = { width: 6688, height: 3764 }; // 군도 맵(타일 64px × 105×59)
     this.players = new Map();
     this.props = [];
     this.myId = null;
@@ -274,14 +274,22 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  // 이동 충돌: 발밑(x,y)이 장애물(나무 밑동/물/덤불/울타리) 사각형에 닿으면 true
+  // 이동 충돌: 발밑(x,y)이 물(섬 밖)이거나 나무/덤불 밑동에 닿으면 true
   _hitObstacle(x, y) {
-    const r = 11; // 플레이어 발밑 반경
-    const list = this.obstacles;
-    if (!list) return false;
-    for (let i = 0; i < list.length; i++) {
-      const o = list[i];
-      if (x > o.x - r && x < o.x + o.w + r && y > o.y - r && y < o.y + o.h + r) return true;
+    const map = this.map;
+    // 섬 밖(물)이면 막기 — land 마스크 기반
+    if (map && map.landMask) {
+      const t = map.tile, m = map.landMask;
+      const tx = Math.floor(x / t), ty = Math.floor(y / t);
+      if (ty < 0 || ty >= m.length || tx < 0 || tx >= m[0].length || !m[ty][tx]) return true;
+    }
+    // 나무/덤불 밑동 박스
+    const r = 9, list = this.obstacles;
+    if (list) {
+      for (let i = 0; i < list.length; i++) {
+        const o = list[i];
+        if (x > o.x - r && x < o.x + o.w + r && y > o.y - r && y < o.y + o.h + r) return true;
+      }
     }
     return false;
   }
@@ -1680,6 +1688,24 @@ export class GameScene extends Phaser.Scene {
             this._rangeShown = false; this._rangeEl.style.display = 'none';
           }
         }
+      }
+    }
+
+    // 오브젝트(나무/덤불) 반투명: '내 캐릭터' 주변 작은 원형 반경 안에 들면 살짝 비치게
+    //  (본인 시야에만 — 남의 위치가 오브젝트 투명으로 드러나지 않게)
+    if (this.map && this.map.objects) {
+      const objs = this.map.objects;
+      const R2 = 70 * 70; // 투명해지는 반경(작게)
+      const near = me && !this.caught;
+      for (let i = 0; i < objs.length; i++) {
+        const o = objs[i];
+        let hide = false;
+        if (near) {
+          const dx = me.x - o.x, dy = me.y - o.y;
+          hide = dx * dx + dy * dy < R2;
+        }
+        const tgt = hide ? 0.4 : 1;
+        o.img.alpha += (tgt - o.img.alpha) * 0.2; // 부드럽게 전환
       }
     }
   }

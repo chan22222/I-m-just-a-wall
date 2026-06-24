@@ -51,7 +51,7 @@ function assignRole(room) {
 }
 
 // 월드 크기(클라이언트와 동일하게 유지). 스폰 위치 계산용.
-const WORLD = { width: 3344, height: 1882 }; // map01.png(1672×941) 2배
+const WORLD = { width: 6688, height: 3764 }; // 군도 맵(타일 64px × 105×59)
 
 io.on('connection', (socket) => {
   let currentRoomId = null;
@@ -69,8 +69,9 @@ io.on('connection', (socket) => {
       role,
       color: Math.floor(Math.random() * 3), // 숨는이 색(gray/lemon/orange) 랜덤 인덱스
       name: (name || `P-${socket.id.slice(0, 4)}`).toString().slice(0, 16),
-      x: 200 + Math.random() * (WORLD.width - 400),
-      y: 200 + Math.random() * (WORLD.height - 400),
+      // 중앙 섬의 안전 영역에서 스폰(군도 맵 — 물/호수 회피, 타일 64px)
+      x: 3000 + Math.random() * 800,
+      y: 2580 + Math.random() * 160,
       angle: 0,
       dataURL: null, // 아직 위장 그림 없음
       caught: false, // 술래에게 잡혔는지
