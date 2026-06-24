@@ -36,35 +36,37 @@
 
       <div class="ts-step hidden" data-step="create">
         <input id="ts-roomname" class="ts-input" placeholder="방 이름" maxlength="20" autocomplete="off" />
-        <div class="ts-opts">
-          <label class="ts-opt">최대 인원<input id="ts-max" type="number" value="12" min="2" max="30" /></label>
-          <label class="ts-opt">술래 인원<input id="ts-seekers" type="number" value="2" min="1" max="3" /></label>
-          <label class="ts-opt">술래 대기(초)<input id="ts-swait" type="number" value="70" min="5" max="200" /></label>
-          <label class="ts-opt">탐색 시간(초)<input id="ts-htime" type="number" value="200" min="30" max="600" /></label>
-          <label class="ts-opt">정답 공개(초)<input id="ts-reveal" type="number" value="30" min="5" max="100" /></label>
-          <label class="ts-opt">모드<select id="ts-mode"><option value="basic">기본</option><option value="infection">감염</option></select></label>
+        <div class="ts-create-grid">
+          <div class="ts-opts">
+            <label class="ts-opt">최대 인원<input id="ts-max" type="number" value="12" min="2" max="30" /></label>
+            <label class="ts-opt">술래 인원<input id="ts-seekers" type="number" value="2" min="1" max="3" /></label>
+            <label class="ts-opt">술래 대기(초)<input id="ts-swait" type="number" value="70" min="5" max="200" /></label>
+            <label class="ts-opt">탐색 시간(초)<input id="ts-htime" type="number" value="200" min="30" max="600" /></label>
+            <label class="ts-opt">정답 공개(초)<input id="ts-reveal" type="number" value="30" min="5" max="100" /></label>
+            <label class="ts-opt">모드<select id="ts-mode"><option value="basic">기본</option><option value="infection">감염</option></select></label>
+          </div>
+          <div class="ts-maps">
+            <p class="ts-maps-title">맵 선택</p>
+            <div class="ts-map selected" data-map="island">🌲<br>조용한 숲</div>
+            <div class="ts-map disabled">?</div>
+            <div class="ts-map disabled">?</div>
+          </div>
         </div>
         <button class="ts-btn primary" data-act="create" data-public="1">🌐 공개 방 만들기</button>
         <button class="ts-btn" data-act="create" data-public="0">🔒 비공개 방 만들기</button>
         <button class="ts-btn ghost" data-act="back">← 뒤로</button>
       </div>
 
-      <div class="ts-step hidden" data-step="join">
-        <button class="ts-btn primary" data-act="join-public">🌐 공개 방 목록</button>
-        <button class="ts-btn" data-act="join-private">🔒 비공개 코드 입력</button>
-        <button class="ts-btn ghost" data-act="back">← 뒤로</button>
-      </div>
-
       <div class="ts-step hidden" data-step="public-list">
+        <div class="ts-private-join">
+          <input id="ts-code" class="ts-input" placeholder="🔒 비공개 방 코드" maxlength="12" autocomplete="off" />
+          <button class="ts-btn" data-act="join-code">입장</button>
+        </div>
         <div id="ts-roomlist" class="ts-roomlist"></div>
-        <button class="ts-btn ghost" data-act="refresh">↻ 새로고침</button>
-        <button class="ts-btn ghost" data-act="back-join">← 뒤로</button>
-      </div>
-
-      <div class="ts-step hidden" data-step="private-code">
-        <input id="ts-code" class="ts-input" placeholder="방 코드 (예: ABCDE)" maxlength="12" autocomplete="off" />
-        <button class="ts-btn primary" data-act="join-code">참가</button>
-        <button class="ts-btn ghost" data-act="back-join">← 뒤로</button>
+        <div class="ts-row2">
+          <button class="ts-btn ghost" data-act="refresh">↻ 새로고침</button>
+          <button class="ts-btn ghost" data-act="back">← 뒤로</button>
+        </div>
       </div>
 
       <div id="ts-msg" class="ts-msg"></div>
@@ -88,8 +90,38 @@
   <!-- 술래 대기(추격 시작 카운트다운) 오버레이 -->
   <div id="wait-overlay" class="hidden"></div>
 
-  <!-- 방장 게임 시작 버튼(로비 단계) -->
-  <button id="start-btn" class="hidden" type="button">▶ 게임 시작</button>
+  <!-- 방장 로비 컨트롤(방 설정 + 게임 시작) -->
+  <div id="lobby-controls" class="hidden">
+    <button id="settings-btn" type="button">⚙ 설정</button>
+    <button id="start-btn" type="button">▶ 게임 시작</button>
+  </div>
+
+  <!-- 방 설정 모달(방장, 로비 단계) -->
+  <div id="settings-modal" class="hidden">
+    <div class="sm-box">
+      <p class="sm-title">⚙ 방 설정</p>
+      <div class="ts-create-grid">
+        <div class="ts-opts">
+          <label class="ts-opt">최대 인원<input id="rs-max" type="number" min="2" max="30" /></label>
+          <label class="ts-opt">술래 인원<input id="rs-seekers" type="number" min="1" max="3" /></label>
+          <label class="ts-opt">술래 대기(초)<input id="rs-swait" type="number" min="5" max="200" /></label>
+          <label class="ts-opt">탐색 시간(초)<input id="rs-htime" type="number" min="30" max="600" /></label>
+          <label class="ts-opt">정답 공개(초)<input id="rs-reveal" type="number" min="5" max="100" /></label>
+          <label class="ts-opt">모드<select id="rs-mode"><option value="basic">기본</option><option value="infection">감염</option></select></label>
+        </div>
+        <div class="ts-maps">
+          <p class="ts-maps-title">맵 선택</p>
+          <div class="ts-map selected" data-map="island">🌲<br>조용한 숲</div>
+          <div class="ts-map disabled">?</div>
+          <div class="ts-map disabled">?</div>
+        </div>
+      </div>
+      <div class="cm-btns">
+        <button class="ts-btn ghost" type="button" data-sm="cancel">취소</button>
+        <button class="ts-btn primary" type="button" data-sm="save">저장</button>
+      </div>
+    </div>
+  </div>
 
   <!-- 공통 확인 모달(게임 UI 스타일) -->
   <div id="confirm-modal" class="hidden">

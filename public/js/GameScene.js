@@ -89,6 +89,7 @@ export class GameScene extends Phaser.Scene {
     this.load.image('obj_coop', SL + 'Objects/Free_Chicken_House.png');   // 닭장(오두막)
     this.load.image('obj_bridge', SL + 'Objects/Wood_Bridge.png');        // 나무 다리
     this.load.image('obj_chest', SL + 'Objects/Chest.png');               // 보물상자
+    this.load.image('zone_seeker', 'map/seeker.png');                     // 술래 지원 구역 발판
     this.load.spritesheet('ts_fence', SL + 'Tilesets/Fences.png', { frameWidth: 16, frameHeight: 16 });
     // 커스텀 마우스 커서(크로스헤어/cursor)는 DOM(#game-cursor)으로 렌더 → Phaser 텍스처 불필요
     // 숨는이: HIDER/<색> 3종(gray/lemon/orange), 구조 동일
@@ -104,7 +105,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   create() {
-    this.world = { width: 6688, height: 4928 }; // 군도(위) + 로비 방(아래), 타일 64px × 105×77
+    this.world = { width: 6688, height: 5440 }; // 군도(위) + 로비 방(아래), 타일 64px × 105×85
     this.players = new Map();
     this.props = [];
     this.myId = null;
@@ -172,6 +173,10 @@ export class GameScene extends Phaser.Scene {
     this.deadGfx = this.add.graphics().setDepth(DEPTH_FOG - 1);
     this._seekerReleaseAt = 0;
     this._phase = 'lobby';
+    // 로비 술래 지원 구역(가운데) — seeker 발판 이미지(로비 단계에만 표시)
+    this.zoneImg = this.add.image(3400, 4416, 'zone_seeker').setScale(4).setDepth(-985).setVisible(false);
+    // 단상(점프로 올라가는 z 플랫폼): 이 위에 서면 술래 지원
+    this._podium = { x: 3400, y: 4416, r: 138, r2: 138 * 138, h: 40 };
     // 커스텀 마우스 커서(DOM): 캔버스/UI/셰이더 위에 항상 표시 + 마우스를 따라다님
     this._setupCursor();
 
@@ -281,6 +286,8 @@ export class GameScene extends Phaser.Scene {
 
   // 술래 추격 대기: 시작 후 대기 시간 동안 로비에 머물다, 끝나면 게임 맵으로 텔레포트
   _applyLobby(me) {
+    // 로비 지원 구역(seeker 발판)은 로비 단계에만 표시
+    if (this.zoneImg) this.zoneImg.setVisible(this._phase === 'lobby');
     const wo = document.getElementById('wait-overlay');
     const waiting = me && this.myRole === 'seeker' && this._seekerReleaseAt && Date.now() < this._seekerReleaseAt;
     if (waiting) {
@@ -947,9 +954,8 @@ export class GameScene extends Phaser.Scene {
           break;
         }
         case 'create-menu': show('create'); break;
-        case 'join-menu': show('join'); break;
+        case 'join-menu': show('public-list'); this.socket.emit('listRooms'); break;
         case 'back': show('main'); break;
-        case 'back-join': show('join'); break;
         case 'create': {
           const name = (document.getElementById('ts-roomname').value || '').trim();
           const num = (id) => Number(document.getElementById(id).value);
@@ -961,8 +967,6 @@ export class GameScene extends Phaser.Scene {
           });
           break;
         }
-        case 'join-public': show('public-list'); this.socket.emit('listRooms'); break;
-        case 'join-private': show('private-code'); break;
         case 'refresh': this.socket.emit('listRooms'); break;
         case 'join-code': {
           const code = (document.getElementById('ts-code').value || '').trim();
@@ -983,12 +987,42 @@ export class GameScene extends Phaser.Scene {
 
     const startBtn = document.getElementById('start-btn');
     if (startBtn) startBtn.addEventListener('click', () => { this.socket.emit('startGame'); startBtn.blur(); });
+    const settingsBtn = document.getElementById('settings-btn');
+    if (settingsBtn) settingsBtn.addEventListener('click', () => this._openSettings());
+    const settingsModal = document.getElementById('settings-modal');
+    if (settingsModal) settingsModal.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-sm]');
+      if (!b) return;
+      if (b.dataset.sm === 'save') {
+        const num = (id) => Number(document.getElementById(id).value);
+        const opts = {
+          maxPlayers: num('rs-max'), seekerCount: num('rs-seekers'),
+          seekerWait: num('rs-swait'), hiderTime: num('rs-htime'), revealTime: num('rs-reveal'),
+          mode: document.getElementById('rs-mode').value,
+        };
+        this.socket.emit('updateRoomOptions', opts);
+        this._options = { ...this._options, ...opts };
+        this._mode = opts.mode;
+      }
+      settingsModal.classList.add('hidden');
+    });
   }
 
-  // 방장+로비 단계에서만 시작 버튼 표시
+  // 방장+로비 단계에서만 로비 컨트롤(설정+시작) 표시
   _updateStartButton() {
-    const btn = document.getElementById('start-btn');
-    if (btn) btn.classList.toggle('hidden', !(this._phase === 'lobby' && this._isHost));
+    const el = document.getElementById('lobby-controls');
+    if (el) el.classList.toggle('hidden', !(this._phase === 'lobby' && this._isHost));
+  }
+
+  // 방 설정 모달 열기(현재 옵션을 채워서)
+  _openSettings() {
+    const o = this._options || {};
+    const set = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.value = v; };
+    set('rs-max', o.maxPlayers); set('rs-seekers', o.seekerCount);
+    set('rs-swait', o.seekerWait); set('rs-htime', o.hiderTime); set('rs-reveal', o.revealTime);
+    const ms = document.getElementById('rs-mode'); if (ms) ms.value = o.mode || 'basic';
+    const modal = document.getElementById('settings-modal');
+    if (modal) modal.classList.remove('hidden');
   }
 
   _renderRoomList(list) {
@@ -1077,7 +1111,7 @@ export class GameScene extends Phaser.Scene {
     socket.on('roomCreated', ({ roomId } = {}) => { this._myRoomCode = roomId; });
     socket.on('joinError', ({ message } = {}) => this._titleMsg(message || '입장에 실패했습니다.'));
 
-    socket.on('init', ({ id, role, world, players, roomId, isPublic, phase, isHost, seekerRemainMs }) => {
+    socket.on('init', ({ id, role, world, players, roomId, isPublic, phase, isHost, seekerRemainMs, options }) => {
       this.myId = id;
       this.myRole = role;
       if (world) this.world = world;
@@ -1090,6 +1124,8 @@ export class GameScene extends Phaser.Scene {
       this._showRoomCode(roomId, isPublic);
       this._phase = phase || 'lobby';
       this._isHost = !!isHost;
+      this._options = options || {};
+      this._mode = (options && options.mode) || 'basic';
       // 게임 중 입장 시 술래라면 남은 대기 반영. 로비면 0(시작 전엔 대기 없음)
       this._seekerReleaseAt = (this._phase === 'playing' && role === 'seeker' && seekerRemainMs > 0)
         ? Date.now() + seekerRemainMs : 0;
@@ -1100,13 +1136,23 @@ export class GameScene extends Phaser.Scene {
       }
     });
 
-    // 방장이 시작 → HIDER 즉시 게임 맵으로, SEEKER 는 대기 후 이동
-    socket.on('gameStarted', ({ seekerRemainMs } = {}) => {
+    // 방장이 시작 → 역할 배정 후 HIDER 즉시 게임 맵으로, SEEKER 는 대기 후 이동
+    socket.on('gameStarted', ({ seekerRemainMs, role, mode } = {}) => {
       this._phase = 'playing';
+      if (mode) this._mode = mode;
+      if (role) this._changeRole(this.myId, role); // 스프라이트 교체 + myRole 갱신
       this._updateStartButton();
       if (this.myRole === 'hider') this._teleportToGame();
       else if (this.myRole === 'seeker') this._seekerReleaseAt = Date.now() + (seekerRemainMs || 0);
     });
+
+    // 방 전체 역할 동기화(다른 플레이어 스프라이트 교체)
+    socket.on('rolesUpdated', (roles) => {
+      if (Array.isArray(roles)) roles.forEach(({ id, role }) => this._changeRole(id, role));
+    });
+
+    // 감염모드: 본인이 잡혀 술래가 됨 → 즉시 추격(대기 없음)
+    socket.on('infected', () => { this._seekerReleaseAt = 0; });
 
     socket.on('playerJoined', (p) => this._addPlayer(p));
 
@@ -1166,6 +1212,26 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
+  // 역할 변경: 기존 스프라이트를 지우고 새 역할로 재생성(본인이면 HUD/커서도 갱신)
+  _changeRole(id, newRole) {
+    const p = this.players.get(id);
+    if (!p || p.role === newRole) return;
+    const info = {
+      id, role: newRole, name: p.name, color: p.color,
+      x: p.x, y: p.y, angle: p.angle, holding: p.holding, caught: p.caught,
+      dataURL: p.skinDataURL,
+    };
+    ['shadow', 'body', 'skin', 'label', 'gun', 'gunShot'].forEach((k) => { if (p[k]) p[k].destroy(); });
+    this.players.delete(id);
+    this._addPlayer(info);
+    if (id === this.myId) {
+      this.myRole = newRole;
+      this._updateRoleBadge();
+      this._buildHud();
+      this._applyCursorRole(newRole);
+    }
+  }
+
   _addPlayer(info) {
     if (this.players.has(info.id)) return;
 
@@ -1216,7 +1282,7 @@ export class GameScene extends Phaser.Scene {
     }).setOrigin(0.5);
 
     const p = {
-      id: info.id, role: info.role, name: info.name,
+      id: info.id, role: info.role, name: info.name, color: info.color || 0,
       set, scale, regionW, regionH, regionCY,
       shadow, body, skin, label, gun, gunShot,
       gunShotUntil: 0,        // 발사 중(gun_moving + gun_shot 동시 표시) 종료 시각
@@ -1278,7 +1344,37 @@ export class GameScene extends Phaser.Scene {
     const me = this.players.get(this.myId);
     if (!me || this.caught || this.gameEnded || this.chatOpen) return;
     if (this.drawState !== 'closed') return;       // 캔버스 들거나 그리는 중엔 점프 불가
-    if (me.z === 0) me.zVel = JUMP_VEL;
+    if (me.z <= this._groundHeight(me.x, me.y) + 1) me.zVel = JUMP_VEL; // 바닥/단상 위에서만
+  }
+
+  // 단상 중심까지의 (위쪽을 좁힌) 제곱 거리. top 이 클수록 위쪽 판정이 좁음
+  _podiumDist2(x, y, top) {
+    const p = this._podium;
+    if (!p) return Infinity;
+    const dx = x - p.x;
+    let dy = y - p.y;
+    if (dy < 0) dy *= top;
+    return dx * dx + dy * dy;
+  }
+
+  // 발밑 바닥 높이(단상 위면 단상 높이)
+  _groundHeight(x, y) {
+    const p = this._podium;
+    if (p && this._podiumDist2(x, y, 1.0) < p.r2) return p.h;
+    return 0;
+  }
+
+  // 단상 옆면 충돌: 충분히 높지 않으면(z < 단상높이) 단상 안으로 더 들어가는 이동만 막음
+  // (접선/탈출 방향은 허용 → 가장자리에서 미끄러짐, 끼임 없음)
+  _podiumBlock(x, y) {
+    const p = this._podium;
+    if (!p) return false;
+    const me = this.players.get(this.myId);
+    if (!me || me.z >= p.h - 4) return false; // 점프로 충분히 높으면 통과
+    const d2 = this._podiumDist2(x, y, 1.0);
+    if (d2 >= p.r2) return false;             // 단상 밖이면 통과
+    const cd2 = this._podiumDist2(me.x, me.y, 1.0);
+    return d2 < cd2;                          // 중심으로 더 가까워지는 이동만 차단
   }
 
   _actWhistle() {
@@ -1690,8 +1786,8 @@ export class GameScene extends Phaser.Scene {
         // 축 분리 이동 + 장애물 충돌(막히면 그 축만 정지 → 벽 따라 미끄러짐)
         const nx = Phaser.Math.Clamp(me.x + (vx / len) * speed * dt, 30, this.world.width - 30);
         const ny = Phaser.Math.Clamp(me.y + (vy / len) * speed * dt, topLimit, this.world.height - 10);
-        if (!this._hitObstacle(nx, me.y)) me.x = nx;
-        if (!this._hitObstacle(me.x, ny)) me.y = ny;
+        if (!this._hitObstacle(nx, me.y) && !this._podiumBlock(nx, me.y)) me.x = nx;
+        if (!this._hitObstacle(me.x, ny) && !this._podiumBlock(me.x, ny)) me.y = ny;
         if (vx < 0) me.facingLeft = true;
         else if (vx > 0) me.facingLeft = false;
       }
@@ -1709,13 +1805,16 @@ export class GameScene extends Phaser.Scene {
 
       // 점프/이동 애니는 평소(closed)에만 — 캔버스 들고는 점프 불가 + 캔버스 포즈 유지
       if (!holding) {
+        const ground = this._groundHeight(me.x, me.y);
         if (Phaser.Input.Keyboard.JustDown(this.keys.space)) this._actJump();
-        if (me.z > 0 || me.zVel > 0) {
+        if (me.z > ground || me.zVel > 0) {
           me.z += me.zVel * dt;
           me.zVel -= GRAVITY * dt;
-          if (me.z <= 0) { me.z = 0; me.zVel = 0; }
+          if (me.z <= ground) { me.z = ground; me.zVel = 0; }
+        } else {
+          me.z = ground; // 단상 위면 그 높이 유지
         }
-        if (me.z > 0) me.localAnim = me.zVel > 0 ? 'jump' : 'fall';
+        if (me.z > ground) me.localAnim = me.zVel > 0 ? 'jump' : 'fall';
         else me.localAnim = moving ? 'run' : 'idle'; // 세트가 술래(걸음)/숨는이 run 텍스처를 결정
       }
 
@@ -1937,7 +2036,10 @@ export class GameScene extends Phaser.Scene {
       }
 
       // 그림자: 실제 발에서 아래로 살짝 띄움
-      p.shadow.x = p.x; p.shadow.y = p.y - FEET_OFF * p.scale + 12;
+      // 단상 위면 그림자도 그 높이로, 단 서서히(오르내릴 때 부드럽게)
+      const sg = this._groundHeight(p.x, p.y);
+      p._shadowG = Phaser.Math.Linear(p._shadowG || 0, sg, 0.12);
+      p.shadow.x = p.x; p.shadow.y = p.y - p._shadowG - FEET_OFF * p.scale + 12;
       p.shadow.setScale(Phaser.Math.Clamp(1 - off * 0.012, 0.45, 1));
 
       // 명찰: 실제 머리 위로 띄움(캐릭터가 커져도 안 겹치게)

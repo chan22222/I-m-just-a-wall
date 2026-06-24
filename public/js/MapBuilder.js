@@ -84,8 +84,8 @@ export class MapBuilder {
       toWater.forEach(([x, y]) => { land[y][x] = false; });
       toLand.forEach(([x, y]) => { land[y][x] = true; });
     }
-    // 전용 로비 방(군도 아래 별도 영역) — cleanup 뒤에 추가해 깔끔한 사각 유지
-    const LB = { x: 53, y: 69, hw: 9, hh: 6 };
+    // 전용 로비 방(군도 아래 별도 영역) — 세로 기준 약 4:3(가로 17 × 세로 13 타일)
+    const LB = { x: 53, y: 69, hw: 8, hh: 6 };
     for (let ty = LB.y - LB.hh; ty <= LB.y + LB.hh; ty++) {
       for (let tx = LB.x - LB.hw; tx <= LB.x + LB.hw; tx++) {
         if (ty >= 0 && ty < ROWS && tx >= 0 && tx < COLS) land[ty][tx] = true;

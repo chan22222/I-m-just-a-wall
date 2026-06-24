@@ -31,7 +31,7 @@ html, body {
 }
 #title-screen.hidden { display: none; }
 .ts-card {
-  width: min(92vw, 380px);
+  width: min(94vw, 460px);
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -82,6 +82,11 @@ html, body {
 .ts-btn.primary:hover { background: #4078f5; }
 .ts-btn.ghost { background: transparent; border-color: transparent; box-shadow: none; color: #aeb6c6; height: 36px; }
 .ts-btn.ghost:hover { color: #fff; background: rgba(255,255,255,0.05); }
+.ts-private-join { display: flex; gap: 6px; }
+.ts-private-join .ts-input { flex: 1; }
+.ts-private-join .ts-btn { flex: 0 0 auto; height: 42px; padding: 0 16px; }
+.ts-row2 { display: flex; gap: 6px; }
+.ts-row2 .ts-btn { flex: 1; }
 .ts-roomlist {
   display: flex; flex-direction: column; gap: 5px;
   max-height: 240px; overflow-y: auto; min-height: 60px;
@@ -119,6 +124,19 @@ html, body {
 .cm-msg { margin: 0; font-size: 14px; color: #e7e9ee; text-align: center; line-height: 1.5; white-space: pre-line; }
 .cm-btns { display: flex; gap: 8px; }
 .cm-btns .ts-btn { flex: 1; }
+.ts-create-grid { display: grid; grid-template-columns: 1fr 116px; gap: 10px; }
+.ts-maps { display: flex; flex-direction: column; gap: 6px; }
+.ts-maps-h { display: flex; gap: 6px; }
+.ts-maps-h .ts-map { min-height: 44px; }
+.ts-maps-title { margin: 0; font-size: 11px; color: #aeb6c6; text-align: center; }
+.ts-map {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: bold; line-height: 1.25; text-align: center;
+  background: #2e3650; border: 2px solid #0a0c14; color: #e7e9ee;
+  cursor: pointer; min-height: 40px;
+}
+.ts-map.selected { border-color: #4078f5; background: #2f6df0; }
+.ts-map.disabled { color: #5b6478; background: #1a1f2e; cursor: default; font-size: 22px; }
 .ts-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .ts-opt { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: #aeb6c6; }
 .ts-opt input, .ts-opt select {
@@ -128,6 +146,10 @@ html, body {
   border: 2px solid #0a0c14; border-radius: 0; outline: none;
 }
 .ts-opt input:focus, .ts-opt select:focus { border-color: #2f6df0; }
+/* 도트 UI와 안 맞는 기본 숫자 스피너 제거(직접 입력) */
+.ts-opt input[type=number]::-webkit-inner-spin-button,
+.ts-opt input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.ts-opt input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 
 /* 술래 대기(추격 시작 카운트다운) 오버레이 */
 #wait-overlay {
@@ -145,22 +167,50 @@ html, body {
 }
 #wait-overlay.hidden { display: none; }
 
-/* 방장 게임 시작 버튼 */
-#start-btn {
+/* 방장 로비 컨트롤(모드 + 시작) */
+#lobby-controls {
   position: fixed;
   bottom: 26px; left: 50%;
   transform: translateX(-50%);
   z-index: 50;
-  padding: 14px 38px;
-  font-size: 16px; font-weight: bold; font-family: inherit;
+  display: flex; gap: 8px; align-items: stretch;
+}
+#lobby-controls.hidden { display: none; }
+#settings-btn {
+  height: 56px; padding: 0 24px;
+  font-size: 15px; font-weight: bold; font-family: inherit;
+  color: #e7e9ee; background: #2e3650;
+  border: 3px solid #0a0c14; border-radius: 0; cursor: pointer;
+  box-shadow: inset 1px 1px 0 rgba(255,255,255,0.1), 4px 4px 0 rgba(0,0,0,0.4);
+}
+#settings-btn:hover { background: #36405e; }
+#settings-btn:active { transform: translateY(2px); }
+
+/* 방 설정 모달 */
+#settings-modal {
+  position: fixed; inset: 0; z-index: 2000;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.6);
+}
+#settings-modal.hidden { display: none; }
+.sm-box {
+  width: min(94vw, 460px);
+  display: flex; flex-direction: column; gap: 14px;
+  padding: 24px 22px;
+  background: #232a3d; border: 3px solid #0a0c14;
+  box-shadow: inset 2px 2px 0 0 rgba(255,255,255,0.12), inset -2px -2px 0 0 rgba(0,0,0,0.5), 6px 6px 0 rgba(0,0,0,0.45);
+}
+.sm-title { margin: 0; font-size: 16px; font-weight: bold; color: #ffd83b; text-align: center; }
+#start-btn {
+  height: 56px; padding: 0 38px;
+  font-size: 17px; font-weight: bold; font-family: inherit;
   color: #fff; background: #2f6df0;
   border: 3px solid #0a0c14; border-radius: 0;
   cursor: pointer;
   box-shadow: inset 1px 1px 0 rgba(255,255,255,0.2), 4px 4px 0 rgba(0,0,0,0.4);
 }
 #start-btn:hover { background: #4078f5; }
-#start-btn:active { transform: translateX(-50%) translateY(2px); }
-#start-btn.hidden { display: none; }
+#start-btn:active { transform: translateY(2px); }
 
 /* 게임 중 방 코드 표시(상단 중앙) */
 #room-code {

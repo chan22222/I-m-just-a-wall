@@ -75,6 +75,15 @@ function nickTaken(nick, exceptId) {
   return false;
 }
 
+// 배열 제자리 셔플(Fisher-Yates)
+function shuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
 // 방에 술래(seeker)가 이미 있으면 hider, 없으면 seeker 로 역할 배정
 function assignRole(room) {
   let hasSeeker = false;
@@ -85,8 +94,8 @@ function assignRole(room) {
 }
 
 // 월드 크기(클라이언트와 동일하게 유지). 스폰 위치 계산용.
-// 군도 맵(위, y 0~3764) + 전용 로비 방(아래, y 3900~) 을 한 월드에 둔다
-const WORLD = { width: 6688, height: 4928 }; // 타일 64px × 105×77
+// 군도 맵(위, y 0~3764) + 전용 로비 방(아래) 을 한 월드에 둔다
+const WORLD = { width: 6688, height: 5440 }; // 타일 64px × 105×85
 
 io.on('connection', (socket) => {
   let currentRoomId = null;
@@ -96,15 +105,15 @@ io.on('connection', (socket) => {
     currentRoomId = roomId;
     socket.join(roomId);
     const room = getRoom(roomId);
-    const role = assignRole(room);
+    const role = 'hider'; // 로비에선 모두 숨는이 — 시작할 때 술래를 랜덤 배정
     const me = {
       id: socket.id,
       role,
       color: Math.floor(Math.random() * 3), // 숨는이 색(gray/lemon/orange) 랜덤 인덱스
       name: (nickname || `P-${socket.id.slice(0, 4)}`).toString().slice(0, 16),
       // 입장 시엔 로비 방에서 대기(시작하면 클라가 게임 맵으로 텔레포트)
-      x: 3400 + (Math.random() - 0.5) * 200,
-      y: 4450 + (Math.random() - 0.5) * 120,
+      x: 3400 + (Math.random() - 0.5) * 760,
+      y: 4416 + (Math.random() - 0.5) * 460,
       angle: 0,
       dataURL: null, // 아직 위장 그림 없음
       caught: false, // 술래에게 잡혔는지
@@ -189,6 +198,19 @@ io.on('connection', (socket) => {
     doJoin(roomId, nickname);
   });
 
+  // 방 옵션 일괄 수정 — 방장만, 로비 단계에서만
+  socket.on('updateRoomOptions', (opts = {}) => {
+    if (!currentRoomId) return;
+    const room = rooms.get(currentRoomId);
+    if (!room || room.hostId !== socket.id || room.phase !== 'lobby') return;
+    room.maxPlayers = clampNum(opts.maxPlayers, 2, 30, room.maxPlayers || 12);
+    room.seekerCount = clampNum(opts.seekerCount, 1, 3, room.seekerCount || 2);
+    room.seekerWait = clampNum(opts.seekerWait, 5, 200, room.seekerWait || 70);
+    room.hiderTime = clampNum(opts.hiderTime, 30, 600, room.hiderTime || 200);
+    room.revealTime = clampNum(opts.revealTime, 5, 100, room.revealTime || 30);
+    room.mode = opts.mode === 'infection' ? 'infection' : 'basic';
+  });
+
   // 게임(라운드) 시작 — 방장만. 술래 대기 시작 시각 설정 후 방 전체에 알림
   socket.on('startGame', () => {
     if (!currentRoomId) return;
@@ -196,9 +218,23 @@ io.on('connection', (socket) => {
     if (!room || room.hostId !== socket.id || room.phase === 'playing') return;
     room.phase = 'playing';
     room.seekerReleaseAt = Date.now() + (room.seekerWait || 70) * 1000;
-    io.to(currentRoomId).emit('gameStarted', {
-      seekerRemainMs: Math.max(0, room.seekerReleaseAt - Date.now()),
-    });
+    // 술래 선정: 지원 구역(로비 가운데) 안 플레이어 우선 → 정원 초과 시 추첨, 미달 시 나머지에서 추첨
+    const SZ = { x: 3400, y: 4416, r2: 150 * 150 };
+    const players = [...room.players.values()];
+    const inZone = (p) => { const dx = (p.x || 0) - SZ.x, dy = (p.y || 0) - SZ.y; return dx * dx + dy * dy < SZ.r2; };
+    const volunteers = shuffle(players.filter(inZone));
+    const others = shuffle(players.filter((p) => !inZone(p)));
+    const sc = Math.min(room.seekerCount || 2, players.length);
+    let seekers = volunteers.slice(0, sc);
+    if (seekers.length < sc) seekers = seekers.concat(others.slice(0, sc - seekers.length));
+    const seekerIds = new Set(seekers.map((p) => p.id));
+    players.forEach((p) => { p.role = seekerIds.has(p.id) ? 'seeker' : 'hider'; p.caught = false; });
+    const remain = Math.max(0, room.seekerReleaseAt - Date.now());
+    for (const p of players) {
+      io.to(p.id).emit('gameStarted', { seekerRemainMs: remain, role: p.role, mode: room.mode || 'basic' });
+    }
+    io.to(currentRoomId).emit('rolesUpdated', players.map((p) => ({ id: p.id, role: p.role })));
+    broadcastScores(currentRoomId);
   });
 
   // 공개 방 목록
@@ -283,11 +319,18 @@ io.on('connection', (socket) => {
     const target = room.players.get(targetId);
     if (!shooter || shooter.role !== 'seeker') return;
     if (!target || target.role !== 'hider' || target.caught) return;
-    target.caught = true;
     shooter.score = (shooter.score || 0) + 500; // 킬 보너스
-    io.to(currentRoomId).emit('playerCaught', { id: targetId });
+    if (room.mode === 'infection') {
+      // 감염모드: 잡힌 숨는이가 술래가 됨(시체 아님, 즉시 추격)
+      target.role = 'seeker';
+      io.to(currentRoomId).emit('rolesUpdated', [{ id: targetId, role: 'seeker' }]);
+      io.to(targetId).emit('infected');
+    } else {
+      target.caught = true;
+      io.to(currentRoomId).emit('playerCaught', { id: targetId });
+    }
     broadcastScores(currentRoomId);
-    // 안 잡힌 숨는이가 0명이면 술래 승리
+    // 안 잡힌/감염 안 된 숨는이가 0명이면 술래 승리
     const remaining = [...room.players.values()].filter((p) => p.role === 'hider' && !p.caught).length;
     if (remaining === 0) io.to(currentRoomId).emit('gameOver', { winner: 'seeker' });
   });
