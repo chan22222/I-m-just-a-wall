@@ -116,13 +116,15 @@ io.on('connection', (socket) => {
       y: 4416 + (Math.random() - 0.5) * 460,
       angle: 0,
       dataURL: null, // 아직 위장 그림 없음
-      caught: false, // 술래에게 잡혔는지
+      // 진행 중인 방에 난입하면 죽은 것처럼 관전(라운드 끝나면 다음 판부터 참여)
+      caught: room.phase === 'playing',
       score: 0,      // 점수(술래=킬 500 / 숨는이=술래 근접 초당 10)
     };
     room.players.set(socket.id, me);
     socket.emit('init', {
       id: socket.id,
       role,
+      caught: me.caught, // 난입 관전 여부
       world: WORLD,
       players: Array.from(room.players.values()),
       roomId,
@@ -131,13 +133,17 @@ io.on('connection', (socket) => {
       // 방 옵션 + 진행 단계/방장 여부 + 술래 대기 남은 시간(시계차 무관하게 ms)
       options: {
         maxPlayers: room.maxPlayers || 12,
+        seekerCount: room.seekerCount || 2,
         seekerWait: room.seekerWait || 70,
         hiderTime: room.hiderTime || 200,
         revealTime: room.revealTime || 30,
+        whistleTime: room.whistleTime || 30,
+        mode: room.mode || 'basic',
       },
       phase: room.phase || 'lobby',
       isHost: room.hostId === socket.id,
       seekerRemainMs: room.seekerReleaseAt ? Math.max(0, room.seekerReleaseAt - Date.now()) : 0,
+      whistleRemainMs: room.nextWhistleAt ? Math.max(0, room.nextWhistleAt - Date.now()) : 0,
     });
     socket.to(roomId).emit('playerJoined', me);
     broadcastScores(roomId);
@@ -160,7 +166,7 @@ io.on('connection', (socket) => {
   });
 
   // 방 만들기(공개/비공개 + 옵션) → 코드 생성 후 자동 입장
-  socket.on('createRoom', ({ name, isPublic, nickname, maxPlayers, seekerWait, hiderTime, revealTime, seekerCount, mode } = {}) => {
+  socket.on('createRoom', ({ name, isPublic, nickname, maxPlayers, seekerWait, hiderTime, revealTime, seekerCount, whistleTime, mode } = {}) => {
     name = String(name || '방').slice(0, 20).trim() || '방';
     if (roomNameExists(name)) {
       socket.emit('joinError', { message: '이미 있는 방 이름 입니다.' });
@@ -177,6 +183,7 @@ io.on('connection', (socket) => {
     room.seekerWait = clampNum(seekerWait, 5, 200, 70);
     room.hiderTime = clampNum(hiderTime, 30, 600, 200);
     room.revealTime = clampNum(revealTime, 5, 100, 30);
+    room.whistleTime = clampNum(whistleTime, 10, 100, 30);
     room.seekerCount = clampNum(seekerCount, 1, 3, 2);
     room.mode = mode === 'infection' ? 'infection' : 'basic';
     socket.emit('roomCreated', { roomId: code, isPublic: room.isPublic });
@@ -208,6 +215,7 @@ io.on('connection', (socket) => {
     room.seekerWait = clampNum(opts.seekerWait, 5, 200, room.seekerWait || 70);
     room.hiderTime = clampNum(opts.hiderTime, 30, 600, room.hiderTime || 200);
     room.revealTime = clampNum(opts.revealTime, 5, 100, room.revealTime || 30);
+    room.whistleTime = clampNum(opts.whistleTime, 10, 100, room.whistleTime || 30);
     room.mode = opts.mode === 'infection' ? 'infection' : 'basic';
   });
 
@@ -218,6 +226,7 @@ io.on('connection', (socket) => {
     if (!room || room.hostId !== socket.id || room.phase === 'playing') return;
     room.phase = 'playing';
     room.seekerReleaseAt = Date.now() + (room.seekerWait || 70) * 1000;
+    room.nextWhistleAt = Date.now() + (room.whistleTime || 30) * 1000; // 강제 휘파람 첫 발동
     // 술래 선정: 지원 구역(로비 가운데) 안 플레이어 우선 → 정원 초과 시 추첨, 미달 시 나머지에서 추첨
     const SZ = { x: 3400, y: 4416, r2: 150 * 150 };
     const players = [...room.players.values()];
@@ -246,6 +255,8 @@ io.on('connection', (socket) => {
           id, name: room.name || id, count: room.players.size,
           max: room.maxPlayers || 12, mode: room.mode || 'basic',
           seekers: room.seekerCount || 2, phase: room.phase || 'lobby',
+          seekerWait: room.seekerWait || 70, hiderTime: room.hiderTime || 200,
+          revealTime: room.revealTime || 30, whistleTime: room.whistleTime || 30,
         });
       }
     }
@@ -288,10 +299,19 @@ io.on('connection', (socket) => {
   // -------------------------------------------------------------------------
   // [5단계] 휘파람: 위치를 같이 보내서, 받는 쪽에서 반경 판정을 한다.
   // -------------------------------------------------------------------------
-  socket.on('whistle', ({ x, y } = {}) => {
+  socket.on('whistle', ({ x, y, forced } = {}) => {
     if (!currentRoomId) return;
     // 본인 포함 방 전체에 broadcast (본인도 이펙트를 보도록)
     io.to(currentRoomId).emit('playerWhistled', { id: socket.id, x, y });
+    // 직접 분 휘파람(R)이면 강제 휘파람 타이머를 설정 시간으로 리셋(방 전체 동기화)
+    if (!forced) {
+      const room = rooms.get(currentRoomId);
+      if (room && room.mode !== 'infection' && room.phase === 'playing') {
+        const ms = (room.whistleTime || 30) * 1000;
+        room.nextWhistleAt = Date.now() + ms;
+        io.to(currentRoomId).emit('whistleReset', { remainMs: ms });
+      }
+    }
   });
 
   // -------------------------------------------------------------------------
@@ -321,8 +341,10 @@ io.on('connection', (socket) => {
     if (!target || target.role !== 'hider' || target.caught) return;
     shooter.score = (shooter.score || 0) + 500; // 킬 보너스
     if (room.mode === 'infection') {
-      // 감염모드: 잡힌 숨는이가 술래가 됨(시체 아님, 즉시 추격)
+      // 감염모드: 잡힌 자리에 시체+그림을 남기고(전시), 본인은 술래로 부활해 즉시 추격
+      io.to(currentRoomId).emit('corpseSpawn', { id: targetId });
       target.role = 'seeker';
+      target.dataURL = null; // 술래로 변신 → 위장 그림 제거(그림은 시체에만 남음)
       io.to(currentRoomId).emit('rolesUpdated', [{ id: targetId, role: 'seeker' }]);
       io.to(targetId).emit('infected');
     } else {
@@ -403,8 +425,15 @@ const SCORE_RANGE = 500;
 const SCORE_RANGE_SQ = SCORE_RANGE * SCORE_RANGE; // sqrt 없이 제곱 거리로 비교
 const SCORE_PER_SEC = 10;
 setInterval(() => {
+  const now = Date.now();
   for (const [roomId, room] of rooms) {
     if (room.players.size === 0 || room.phase !== 'playing') continue; // 로비 중엔 점수 없음
+    // 강제 휘파람("휘파람을 참을 수 없어"): 주기마다 살아있는 숨는이를 강제로 불게 해 위치 노출
+    if (room.mode !== 'infection') {
+      const interval = (room.whistleTime || 30) * 1000;
+      if (!room.nextWhistleAt) room.nextWhistleAt = now + interval;
+      else if (now >= room.nextWhistleAt) { room.nextWhistleAt = now + interval; io.to(roomId).emit('forceWhistle'); }
+    }
     const players = [...room.players.values()];
     const seekers = players.filter((p) => p.role === 'seeker' && !p.caught);
     const hiders = players.filter((p) => p.role === 'hider' && !p.caught);

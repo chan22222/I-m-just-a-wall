@@ -101,7 +101,11 @@ html, body {
 .ts-room-main { display: flex; align-items: center; justify-content: space-between; }
 .ts-room-name { font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ts-room .ts-room-count { color: #5fe08a; font-weight: bold; flex: 0 0 auto; margin-left: 8px; }
+/* 진행 중인 방은 인원 수를 빨갛게(난입하면 관전) */
+.ts-room .ts-room-count.playing { color: #ff5a5a; }
 .ts-room-info { font-size: 11px; color: #9aa3b5; }
+/* 방 목록 시간 요약(둘째 줄) */
+.ts-room-times { margin-top: 2px; font-size: 10px; color: #6f7790; }
 .ts-room-empty { text-align: center; color: #8b93a6; padding: 20px; font-size: 13px; }
 .ts-msg { min-height: 18px; text-align: center; font-size: 12px; color: #ff8a8a; }
 .ts-note { margin: 4px 0 0; text-align: center; font-size: 11px; color: #8b93a6; }
@@ -125,7 +129,7 @@ html, body {
 .cm-btns { display: flex; gap: 8px; }
 .cm-btns .ts-btn { flex: 1; }
 .ts-create-grid { display: grid; grid-template-columns: 1fr 116px; gap: 10px; }
-.ts-maps { display: flex; flex-direction: column; gap: 6px; }
+.ts-maps { display: flex; flex-direction: column; gap: 6px; border-left: 2px solid #2a3147; padding-left: 10px; }
 .ts-maps-h { display: flex; gap: 6px; }
 .ts-maps-h .ts-map { min-height: 44px; }
 .ts-maps-title { margin: 0; font-size: 11px; color: #aeb6c6; text-align: center; }
@@ -139,6 +143,10 @@ html, body {
 .ts-map.disabled { color: #5b6478; background: #1a1f2e; cursor: default; font-size: 22px; }
 .ts-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .ts-opt { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: #aeb6c6; }
+/* 이름이 긴 옵션(모드 등)은 한 줄 전체 차지 */
+.ts-opt-wide { grid-column: 1 / -1; }
+/* 모드 밑 간단한 설명 */
+.ts-opt-desc { grid-column: 1 / -1; margin: 2px 0 0; font-size: 10px; line-height: 1.45; color: #8b93a4; }
 .ts-opt input, .ts-opt select {
   height: 34px; padding: 0 8px;
   font-size: 13px; font-family: inherit;
@@ -146,6 +154,8 @@ html, body {
   border: 2px solid #0a0c14; border-radius: 0; outline: none;
 }
 .ts-opt input:focus, .ts-opt select:focus { border-color: #2f6df0; }
+/* 감염모드 등으로 비활성화된 옵션 입력 */
+.ts-opt input:disabled { opacity: 0.4; cursor: not-allowed; }
 /* 도트 UI와 안 맞는 기본 숫자 스피너 제거(직접 입력) */
 .ts-opt input[type=number]::-webkit-inner-spin-button,
 .ts-opt input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
@@ -166,6 +176,22 @@ html, body {
   text-align: center;
 }
 #wait-overlay.hidden { display: none; }
+
+/* 강제 휘파람까지 남은 시간(숨는이) — 추격 오버레이 아래 */
+#whistle-timer {
+  position: fixed;
+  top: 116px; left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  font-size: 14px; font-weight: bold;
+  color: #ff9ad8;
+  background: rgba(11,13,18,0.82);
+  border: 2px solid #0a0c14;
+  padding: 6px 14px;
+  white-space: nowrap;
+  text-align: center;
+}
+#whistle-timer.hidden { display: none; }
 
 /* 방장 로비 컨트롤(모드 + 시작) */
 #lobby-controls {
@@ -224,9 +250,14 @@ html, body {
   border: 2px solid #0a0c14;
   padding: 5px 12px;
   white-space: nowrap;
+  text-align: center;
 }
 #room-code.hidden { display: none; }
 #room-code b { color: #ffd83b; letter-spacing: 1px; }
+/* 방 코드 아래 줄: 모드 이름 */
+.room-code-mode { display: block; margin-top: 3px; font-size: 11px; font-weight: normal; color: #8b93a6; }
+/* 방 코드 셋째 줄: 그 외 방 설정 요약 */
+.room-code-opts { display: block; margin-top: 2px; font-size: 10px; font-weight: normal; color: #6f7790; }
 
 /* ---- 커스텀 마우스 커서 (DOM: 캔버스/UI/셰이더 위에 항상) ---- */
 /* 원본 시트 60×15(15×15 4프레임)을 4배 확대 → 시트 240×60, 한 프레임 60×60 */

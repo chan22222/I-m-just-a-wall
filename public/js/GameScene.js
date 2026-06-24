@@ -174,7 +174,9 @@ export class GameScene extends Phaser.Scene {
     this._seekerReleaseAt = 0;
     this._phase = 'lobby';
     // 로비 술래 지원 구역(가운데) — seeker 발판 이미지(로비 단계에만 표시)
-    this.zoneImg = this.add.image(3400, 4416, 'zone_seeker').setScale(4).setDepth(-985).setVisible(false);
+    // depth = 단상 위쪽 영역 안쪽 → 캐릭터가 단상 위쪽(뒤)에 서면 단상 윗부분이 발을 가림(2.5D)
+    // 로비 공간에 항상 두어 게임 중에도 유지
+    this.zoneImg = this.add.image(3400, 4416, 'zone_seeker').setScale(4).setDepth(4416 - 55);
     // 단상(점프로 올라가는 z 플랫폼): 이 위에 서면 술래 지원
     this._podium = { x: 3400, y: 4416, r: 138, r2: 138 * 138, h: 40 };
     // 커스텀 마우스 커서(DOM): 캔버스/UI/셰이더 위에 항상 표시 + 마우스를 따라다님
@@ -286,14 +288,15 @@ export class GameScene extends Phaser.Scene {
 
   // 술래 추격 대기: 시작 후 대기 시간 동안 로비에 머물다, 끝나면 게임 맵으로 텔레포트
   _applyLobby(me) {
-    // 로비 지원 구역(seeker 발판)은 로비 단계에만 표시
-    if (this.zoneImg) this.zoneImg.setVisible(this._phase === 'lobby');
     const wo = document.getElementById('wait-overlay');
-    const waiting = me && this.myRole === 'seeker' && this._seekerReleaseAt && Date.now() < this._seekerReleaseAt;
+    // 술래·숨는이 모두 추격 시작 카운트다운을 봄(숨는이도 술래 등장 시점을 알도록)
+    const waiting = me && this._phase === 'playing' && this._seekerReleaseAt && Date.now() < this._seekerReleaseAt;
     if (waiting) {
       if (wo) {
         const sec = Math.max(0, Math.ceil((this._seekerReleaseAt - Date.now()) / 1000));
-        wo.textContent = `🔒 추격 시작까지 ${sec}초`;
+        wo.textContent = this.myRole === 'seeker'
+          ? `🔒 추격 시작까지 ${sec}초`
+          : `👁 술래 등장까지 ${sec}초`;
         wo.classList.remove('hidden');
       }
     } else {
@@ -303,6 +306,21 @@ export class GameScene extends Phaser.Scene {
         this._teleportToGame();
         this._seekerReleaseAt = 0;
       }
+    }
+  }
+
+  // 강제 휘파람까지 남은 시간 표시(숨는이 · 휘파람 모드일 때만)
+  _applyWhistleTimer() {
+    const el = document.getElementById('whistle-timer');
+    if (!el) return;
+    const show = this._phase === 'playing' && this._mode !== 'infection' && !this.gameEnded
+      && this.myRole === 'hider' && !this.caught && this._nextWhistleAt;
+    if (show) {
+      const sec = Math.max(0, Math.ceil((this._nextWhistleAt - Date.now()) / 1000));
+      el.textContent = `🎵 휘파람까지 ${sec}초`;
+      el.classList.remove('hidden');
+    } else if (!el.classList.contains('hidden')) {
+      el.classList.add('hidden');
     }
   }
 
@@ -800,6 +818,38 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  // 감염모드: 잡힌 숨는이의 스냅샷(위치/그림)으로 고정된 시체 엔티티를 만든다.
+  // 원본 플레이어는 곧 술래로 부활하므로, 시체는 시체대로 그 자리에 전시된다.
+  _spawnCorpse(src) {
+    this._corpseSeq = (this._corpseSeq || 0) + 1;
+    const cid = '__corpse_' + this._corpseSeq;
+    this._addPlayer({
+      id: cid, role: 'hider', name: src.name, color: src.color,
+      x: src.x, y: src.y, angle: src.angle, caught: true,
+      dataURL: src.skinDataURL,
+    });
+    const c = this.players.get(cid);
+    if (c) c.isCorpse = true; // 조준/네트워크 대상 아님(클라 전용 전시물)
+  }
+
+  // 진행 중인 방에 난입했을 때: 죽은 것처럼 관전 상태로 진입(처치 폭발 효과는 없이)
+  _enterSpectator() {
+    this.caught = true;
+    const me = this.players.get(this.myId);
+    if (me) me.caught = true;
+    if (this.board) this.board.hide();
+    if (this.drawGfx) this.drawGfx.setVisible(false).clear();
+    this._setEyedrop(false);
+    this.drawState = 'closed';
+    if (this.cameras && this.cameras.main) this.cameras.main.zoomTo(1, 0);
+    const badge = document.getElementById('role-badge');
+    if (badge) {
+      badge.textContent = '💀 관전 중 — 다음 판 대기';
+      badge.removeAttribute('data-tip');
+      badge.className = '';
+    }
+  }
+
   _onGameOver(winner) {
     if (this.gameEnded) return;
     this.gameEnded = true;
@@ -930,6 +980,7 @@ export class GameScene extends Phaser.Scene {
     if (!screen) return;
     const show = (name) => this._showTitleStep(name);
     const nick = () => this._nick || '';
+    this._bindModeDescs(); // 모드 설명(방 만들기/설정 모달) 초기화 + 변경 시 갱신
     // 저장된 닉네임이 있으면 입력창에 미리 채움(자동 확정 실패 대비)
     try {
       const saved = localStorage.getItem('imjustawall_nick');
@@ -958,11 +1009,12 @@ export class GameScene extends Phaser.Scene {
         case 'back': show('main'); break;
         case 'create': {
           const name = (document.getElementById('ts-roomname').value || '').trim();
+          if (!name) { this._titleMsg('방 이름을 입력하세요.'); break; }
           const num = (id) => Number(document.getElementById(id).value);
           this.socket.emit('createRoom', {
             name, isPublic: btn.dataset.public === '1', nickname: nick(),
             maxPlayers: num('ts-max'), seekerCount: num('ts-seekers'), seekerWait: num('ts-swait'),
-            hiderTime: num('ts-htime'), revealTime: num('ts-reveal'),
+            hiderTime: num('ts-htime'), revealTime: num('ts-reveal'), whistleTime: num('ts-whistle'),
             mode: document.getElementById('ts-mode').value,
           });
           break;
@@ -998,11 +1050,13 @@ export class GameScene extends Phaser.Scene {
         const opts = {
           maxPlayers: num('rs-max'), seekerCount: num('rs-seekers'),
           seekerWait: num('rs-swait'), hiderTime: num('rs-htime'), revealTime: num('rs-reveal'),
+          whistleTime: num('rs-whistle'),
           mode: document.getElementById('rs-mode').value,
         };
         this.socket.emit('updateRoomOptions', opts);
         this._options = { ...this._options, ...opts };
         this._mode = opts.mode;
+        if (this._roomId) this._showRoomCode(this._roomId, this._roomPublic, opts); // 방 코드 모드/옵션 갱신
       }
       settingsModal.classList.add('hidden');
     });
@@ -1014,13 +1068,48 @@ export class GameScene extends Phaser.Scene {
     if (el) el.classList.toggle('hidden', !(this._phase === 'lobby' && this._isHost));
   }
 
+  // 모드별 간단한 설명 텍스트
+  _modeDescText(v) {
+    return v === 'infection'
+      ? '잡힌 숨는이도 술래가 되어 함께 추격합니다.'
+      : '일정 시간마다 HIDER가 휘파람을 불어 위치가 드러납니다.';
+  }
+
+  // 모드 표시 이름(방 코드 옆에 노출)
+  _modeName(v) {
+    return v === 'infection' ? '감염 - 아까까진 동료였는데' : '기본 - 휘파람을 참을 수 없어';
+  }
+
+  _updateModeDesc(selId, descId, whistleId) {
+    const sel = document.getElementById(selId);
+    if (!sel) return;
+    const infection = sel.value === 'infection';
+    const d = document.getElementById(descId);
+    if (d) d.textContent = this._modeDescText(sel.value);
+    // 감염모드는 강제 휘파람이 없음 → 강제 휘파람(초) 입력 비활성화
+    const w = whistleId && document.getElementById(whistleId);
+    if (w) w.disabled = infection;
+  }
+
+  // 모드 select 변경 시 설명/강제휘파람 활성화 갱신 + 초기 표시(방 만들기/설정 모달 양쪽)
+  _bindModeDescs() {
+    [['ts-mode', 'ts-mode-desc', 'ts-whistle'], ['rs-mode', 'rs-mode-desc', 'rs-whistle']].forEach(([s, d, w]) => {
+      const sel = document.getElementById(s);
+      if (!sel) return;
+      this._updateModeDesc(s, d, w);
+      sel.addEventListener('change', () => this._updateModeDesc(s, d, w));
+    });
+  }
+
   // 방 설정 모달 열기(현재 옵션을 채워서)
   _openSettings() {
     const o = this._options || {};
     const set = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.value = v; };
     set('rs-max', o.maxPlayers); set('rs-seekers', o.seekerCount);
     set('rs-swait', o.seekerWait); set('rs-htime', o.hiderTime); set('rs-reveal', o.revealTime);
+    set('rs-whistle', o.whistleTime);
     const ms = document.getElementById('rs-mode'); if (ms) ms.value = o.mode || 'basic';
+    this._updateModeDesc('rs-mode', 'rs-mode-desc', 'rs-whistle');
     const modal = document.getElementById('settings-modal');
     if (modal) modal.classList.remove('hidden');
   }
@@ -1035,10 +1124,17 @@ export class GameScene extends Phaser.Scene {
     el.innerHTML = list.map((r) => {
       const mode = r.mode === 'infection' ? '감염' : '기본';
       const phase = r.phase === 'playing' ? '진행중' : '대기중';
+      const times = [
+        `대기 ${r.seekerWait || 70}초`,
+        `탐색 ${r.hiderTime || 200}초`,
+        `정답 ${r.revealTime || 30}초`,
+      ];
+      if (r.mode !== 'infection') times.push(`휘파람 ${r.whistleTime || 30}초`);
       return `<div class="ts-room" data-id="${this._esc(r.id)}">` +
         `<div class="ts-room-main"><span class="ts-room-name">${this._esc(r.name)}</span>` +
-        `<span class="ts-room-count">${r.count}/${r.max || 12}명</span></div>` +
-        `<div class="ts-room-info">${mode} · 술래 ${r.seekers || 2}명 · ${phase}</div></div>`;
+        `<span class="ts-room-count${r.phase === 'playing' ? ' playing' : ''}">${r.count}/${r.max || 12}명</span></div>` +
+        `<div class="ts-room-info">${mode} · 술래 ${r.seekers || 2}명 · ${phase}</div>` +
+        `<div class="ts-room-info ts-room-times">⏱ ${this._esc(times.join(' · '))}</div></div>`;
     }).join('');
   }
 
@@ -1075,10 +1171,23 @@ export class GameScene extends Phaser.Scene {
     if (s) s.classList.add('hidden');
   }
 
-  _showRoomCode(roomId, isPublic) {
+  _showRoomCode(roomId, isPublic, opts) {
     const el = document.getElementById('room-code');
     if (!el || !roomId) return;
-    el.innerHTML = `${isPublic ? '🌐 공개' : '🔒 비공개'} · 코드 <b>${this._esc(roomId)}</b>`;
+    this._roomId = roomId; this._roomPublic = isPublic; // 옵션/모드 변경 시 갱신용
+    const o = opts || this._options || {};
+    const m = o.mode || this._mode || 'basic';
+    const parts = [
+      `최대 ${o.maxPlayers || 12}명`,
+      `술래 ${o.seekerCount || 2}명`,
+      `대기 ${o.seekerWait || 70}초`,
+      `탐색 ${o.hiderTime || 200}초`,
+      `정답 ${o.revealTime || 30}초`,
+    ];
+    if (m !== 'infection') parts.push(`휘파람 ${o.whistleTime || 30}초`); // 감염모드는 강제 휘파람 없음
+    el.innerHTML = `${isPublic ? '🌐 공개' : '🔒 비공개'} · 코드 <b>${this._esc(roomId)}</b>`
+      + `<span class="room-code-mode">${this._esc(this._modeName(m))}</span>`
+      + `<span class="room-code-opts">${this._esc(parts.join(' · '))}</span>`;
     el.classList.remove('hidden');
   }
 
@@ -1111,24 +1220,29 @@ export class GameScene extends Phaser.Scene {
     socket.on('roomCreated', ({ roomId } = {}) => { this._myRoomCode = roomId; });
     socket.on('joinError', ({ message } = {}) => this._titleMsg(message || '입장에 실패했습니다.'));
 
-    socket.on('init', ({ id, role, world, players, roomId, isPublic, phase, isHost, seekerRemainMs, options }) => {
+    socket.on('init', ({ id, role, caught, world, players, roomId, isPublic, phase, isHost, seekerRemainMs, whistleRemainMs, options }) => {
       this.myId = id;
       this.myRole = role;
       if (world) this.world = world;
       players.forEach((p) => this._addPlayer(p));
       this._updateRoleBadge();
+      // 진행 중인 방에 난입 → 죽은 것처럼 관전(이동/조작 불가, 화면만 관전)
+      if (caught) this._enterSpectator();
       this._buildHud();
       // 마우스 포인터: 술래=크로스헤어(중앙 정렬), 숨는이=cursor(좌상단 화살표 끝 기준)
       this._applyCursorRole(role);
       this._hideTitle();
-      this._showRoomCode(roomId, isPublic);
+      this._showRoomCode(roomId, isPublic, options);
       this._phase = phase || 'lobby';
       this._isHost = !!isHost;
       this._options = options || {};
       this._mode = (options && options.mode) || 'basic';
-      // 게임 중 입장 시 술래라면 남은 대기 반영. 로비면 0(시작 전엔 대기 없음)
-      this._seekerReleaseAt = (this._phase === 'playing' && role === 'seeker' && seekerRemainMs > 0)
+      // 게임 중 입장 시 남은 추격 대기 반영(술래·숨는이 모두 카운트다운 표시). 로비면 0
+      this._seekerReleaseAt = (this._phase === 'playing' && seekerRemainMs > 0)
         ? Date.now() + seekerRemainMs : 0;
+      // 강제 휘파람 카운트다운(게임 중 입장 시 남은 시간 반영)
+      this._nextWhistleAt = (this._phase === 'playing' && this._mode !== 'infection' && whistleRemainMs > 0)
+        ? Date.now() + whistleRemainMs : 0;
       this._updateStartButton();
       // 게임 중 입장(늦참): 게임 맵으로. 술래는 남은 대기가 있으면 대기 후 update 가 보냄.
       if (this._phase === 'playing') {
@@ -1142,8 +1256,11 @@ export class GameScene extends Phaser.Scene {
       if (mode) this._mode = mode;
       if (role) this._changeRole(this.myId, role); // 스프라이트 교체 + myRole 갱신
       this._updateStartButton();
+      // 모두 카운트다운 공유: 숨는이는 표시용(즉시 게임 맵), 술래는 대기 후 이동
+      this._seekerReleaseAt = Date.now() + (seekerRemainMs || 0);
+      // 강제 휘파람 카운트다운 시작(감염모드는 없음)
+      this._nextWhistleAt = this._mode !== 'infection' ? Date.now() + this._whistleInterval() : 0;
       if (this.myRole === 'hider') this._teleportToGame();
-      else if (this.myRole === 'seeker') this._seekerReleaseAt = Date.now() + (seekerRemainMs || 0);
     });
 
     // 방 전체 역할 동기화(다른 플레이어 스프라이트 교체)
@@ -1153,6 +1270,23 @@ export class GameScene extends Phaser.Scene {
 
     // 감염모드: 본인이 잡혀 술래가 됨 → 즉시 추격(대기 없음)
     socket.on('infected', () => { this._seekerReleaseAt = 0; });
+
+    // 감염모드: 잡힌 자리에 시체+그림을 남김(원본은 곧 rolesUpdated 로 술래 부활)
+    socket.on('corpseSpawn', ({ id } = {}) => {
+      const src = this.players.get(id);
+      if (src) this._spawnCorpse(src);
+    });
+
+    // "휘파람을 참을 수 없어": 서버 주기 신호 → 내가 숨는이면 강제로 휘파람(위치 노출)
+    socket.on('forceWhistle', () => {
+      this._nextWhistleAt = Date.now() + this._whistleInterval(); // 강제 발동됨 → 다음 카운트다운 시작
+      if (this.myRole === 'hider' && !this.caught) this._actWhistle(true);
+    });
+
+    // 누군가 직접 휘파람을 불어 강제 타이머가 리셋됨(방 전체 동기화)
+    socket.on('whistleReset', ({ remainMs } = {}) => {
+      this._nextWhistleAt = Date.now() + (remainMs || this._whistleInterval());
+    });
 
     socket.on('playerJoined', (p) => this._addPlayer(p));
 
@@ -1216,20 +1350,32 @@ export class GameScene extends Phaser.Scene {
   _changeRole(id, newRole) {
     const p = this.players.get(id);
     if (!p || p.role === newRole) return;
+    // 역할이 바뀌면 위장 그림(region/scale 다름)과 캔버스 든 상태는 리셋한다.
+    //  - dataURL 미전달: 숨는이 그림이 술래 몸에 그대로 칠해지는 버그 방지
+    //  - holding=false: 캔버스 든 채 변신해 이속이 느린 채 남는 버그 방지
     const info = {
       id, role: newRole, name: p.name, color: p.color,
-      x: p.x, y: p.y, angle: p.angle, holding: p.holding, caught: p.caught,
-      dataURL: p.skinDataURL,
+      x: p.x, y: p.y, angle: p.angle, holding: false, caught: p.caught,
     };
     ['shadow', 'body', 'skin', 'label', 'gun', 'gunShot'].forEach((k) => { if (p[k]) p[k].destroy(); });
     this.players.delete(id);
     this._addPlayer(info);
     if (id === this.myId) {
       this.myRole = newRole;
+      this._resetCanvasState(); // 캔버스/그림/이속(drawState) 정리
       this._updateRoleBadge();
       this._buildHud();
       this._applyCursorRole(newRole);
     }
+  }
+
+  // 캔버스 세션 상태 초기화(역할 변경 등): drawState 를 closed 로 되돌려 이속·그림 잔상 제거
+  _resetCanvasState() {
+    this.drawState = 'closed';
+    if (this.board) this.board.hide();
+    if (this.drawGfx) this.drawGfx.setVisible(false).clear();
+    this._setEyedrop(false);
+    if (this.cameras && this.cameras.main) this.cameras.main.zoomTo(1, 0);
   }
 
   _addPlayer(info) {
@@ -1360,7 +1506,7 @@ export class GameScene extends Phaser.Scene {
   // 발밑 바닥 높이(단상 위면 단상 높이)
   _groundHeight(x, y) {
     const p = this._podium;
-    if (p && this._podiumDist2(x, y, 1.0) < p.r2) return p.h;
+    if (p && this._podiumDist2(x, y, 1.55) < p.r2) return p.h;
     return 0;
   }
 
@@ -1371,18 +1517,25 @@ export class GameScene extends Phaser.Scene {
     if (!p) return false;
     const me = this.players.get(this.myId);
     if (!me || me.z >= p.h - 4) return false; // 점프로 충분히 높으면 통과
-    const d2 = this._podiumDist2(x, y, 1.0);
+    const d2 = this._podiumDist2(x, y, 1.55);
     if (d2 >= p.r2) return false;             // 단상 밖이면 통과
-    const cd2 = this._podiumDist2(me.x, me.y, 1.0);
+    const cd2 = this._podiumDist2(me.x, me.y, 1.55);
     return d2 < cd2;                          // 중심으로 더 가까워지는 이동만 차단
   }
 
-  _actWhistle() {
+  _actWhistle(forced = false) {
     const me = this.players.get(this.myId);
     if (!me || this.caught || this.gameEnded) return;
     if (this.drawState !== 'closed' && this.drawState !== 'holding') return;
     this._ensureAudio();
-    if (this.socket) this.socket.emit('whistle', { x: Math.round(me.x), y: Math.round(me.y) });
+    if (this.socket) this.socket.emit('whistle', { x: Math.round(me.x), y: Math.round(me.y), forced });
+    // 직접 분 휘파람이면 다음 강제 휘파람 카운트다운을 설정 시간으로 리셋
+    if (!forced) this._nextWhistleAt = Date.now() + this._whistleInterval();
+  }
+
+  // 강제 휘파람 주기(ms). 옵션값(초) 기반, 기본 30초
+  _whistleInterval() {
+    return ((this._options && this._options.whistleTime) || 30) * 1000;
   }
 
   _actCanvas() { // E (숨는이): 캔버스 꺼내기/집어넣기
@@ -1828,6 +1981,8 @@ export class GameScene extends Phaser.Scene {
 
     // 술래 로비 대기(추격 시작 전까지 가둠)
     this._applyLobby(me);
+    // 강제 휘파람 카운트다운 표시
+    this._applyWhistleTimer();
 
     // [2단계] 키 입력 (잡혀서 관전 중이면 게임 조작 잠금)
     const isSeeker = this.myRole === 'seeker';
@@ -2040,7 +2195,8 @@ export class GameScene extends Phaser.Scene {
       const sg = this._groundHeight(p.x, p.y);
       p._shadowG = Phaser.Math.Linear(p._shadowG || 0, sg, 0.12);
       p.shadow.x = p.x; p.shadow.y = p.y - p._shadowG - FEET_OFF * p.scale + 12;
-      p.shadow.setScale(Phaser.Math.Clamp(1 - off * 0.012, 0.45, 1));
+      p.shadow.setDepth(sg > 0 ? (4416 - 54) : DEPTH_SHADOW); // 단상 위면 발판보다 앞에(안 가려지게)
+      p.shadow.setScale(Phaser.Math.Clamp(1 - (off - sg) * 0.012, 0.45, 1)); // 단상 높이는 빼고 점프 높이만 반영
 
       // 명찰: 실제 머리 위로 띄움(캐릭터가 커져도 안 겹치게)
       p.label.x = p.x;
@@ -2050,7 +2206,10 @@ export class GameScene extends Phaser.Scene {
       // 명찰/그림자 표시 여부(본인 시야에만 적용):
       //  · 술래  → 남(숨는이)의 명찰/그림자는 숨김(본인 것만 표시)
       //  · 숨는이 → H 토글(_hideTags) 시 모든 사람 숨김
-      const tagShow = this.myRole === 'seeker' ? (id === this.myId) : !this._hideTags;
+      // 술래: 본인 + 다른 술래는 보이고 숨는이는 숨김 / 숨는이: H 토글
+      const tagShow = this.myRole === 'seeker'
+        ? (id === this.myId || p.role === 'seeker')
+        : !this._hideTags;
       p.shadow.setVisible(tagShow);
       p.label.setVisible(tagShow);
     });
