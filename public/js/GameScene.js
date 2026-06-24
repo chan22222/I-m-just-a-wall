@@ -351,8 +351,11 @@ export class GameScene extends Phaser.Scene {
   _startReveal(hiders) {
     hiders.forEach((h) => {
       const p = this.players.get(h.id);
-      // 유령으로 공개(revealed=true 면 산 술래에게도 보임)
-      if (p) { p.caught = true; p.ghost = true; p.revealed = true; }
+      // 잡힘과 동일하게: 그 자리에 시체+그림을 남기고(전시) 본인은 유령으로 공개(revealed → 술래에게도 보임)
+      if (p) {
+        this._spawnCorpse(p);
+        p.caught = true; p.ghost = true; p.revealed = true;
+      }
       if (h.id === this.myId) {
         this.caught = true;
         this.ghost = true; // 정답 공개 유령도 이동 가능
