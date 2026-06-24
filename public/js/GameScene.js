@@ -394,12 +394,25 @@ export class GameScene extends Phaser.Scene {
     const cx = W / 2, cy = H / 2;
     // 화살표 위치: 화면끝(가장자리)과 술래(중앙)의 중간쯤 — 중앙에서 화면 절반의 절반 거리
     const reachX = cx * 0.5, reachY = cy * 0.5;
-    const screen = 24; // 실제 화면 안 판정 — 이 안으로 들어오면 마커 숨김
+    const screen = 24; // 실제 화면 안 판정
+    const me = this.players.get(this.myId);
+    const NEAR2 = 300 * 300; // 본인이 이만큼 가까이 오면 그 타겟 마커가 사라짐
     this._revealTargets.forEach((t) => {
+      // 본인이 타겟 근처에 오면 마커 숨김(화면에 보이는지와 무관)
+      if (me) {
+        const ddx = t.x - me.x, ddy = t.y - me.y;
+        if (ddx * ddx + ddy * ddy < NEAR2) { t.arrow.setVisible(false); t.label.setVisible(false); return; }
+      }
       const sx = (t.x - wv.x) / wv.width * W;
       const sy = (t.y - wv.y) / wv.height * H;
       const onScreen = sx >= screen && sx <= W - screen && sy >= screen && sy <= H - screen;
-      if (onScreen) { t.arrow.setVisible(false); t.label.setVisible(false); return; }
+      if (onScreen) {
+        // 화면 안이지만 아직 근처 아님: 실제 위치에 닉네임만(화살표 없이)
+        t.arrow.setVisible(false);
+        t.label.setPosition(sx, sy - 30).setVisible(true);
+        return;
+      }
+      // 화면 밖: 가장자리 화살표 + 닉네임
       const dx = sx - cx, dy = sy - cy;
       const ang = Math.atan2(dy, dx);
       const sc = Math.min(reachX / Math.max(Math.abs(dx), 0.001), reachY / Math.max(Math.abs(dy), 0.001));
