@@ -26,7 +26,7 @@ const WHISTLE_MAX_R = 800;    // 소리가 들리는 최대 거리(이 거리에
 const VOICE_NEAR_R = 160;     // 음성채팅: 이 거리 안은 최대 볼륨
 const VOICE_MAX_R = 700;      // 음성채팅: 이 거리부터는 안 들림(볼륨 0)
 // 사격(술래) — 마우스 방향 발사로 숨는이 잡기
-const GUN_RANGE = 780;    // 사거리(= 시야 거리)
+const GUN_RANGE = 400;    // 사거리
 const HIT_RADIUS = 48;    // 명중 판정 반경(조준선에서 이 거리 안이면 맞음)
 const GUN_CD = 650;       // 명중/평소 쿨다운(ms)
 const GUN_CD_MISS = 2000; // 빗맞힘 쿨다운(ms)
@@ -81,6 +81,7 @@ export class GameScene extends Phaser.Scene {
     this.load.image('gun_shot', S + '7_Cat_gun_shot.png');
     // 맵 배경 이미지
     this.load.image('map01', 'map/map01.png');
+    // 커스텀 마우스 커서(크로스헤어/cursor)는 DOM(#game-cursor)으로 렌더 → Phaser 텍스처 불필요
     // 숨는이: HIDER/<색> 3종(gray/lemon/orange), 구조 동일
     HIDER_SETS.forEach((c) => {
       const H = 'character/HIDER/' + c + '/';
@@ -99,6 +100,7 @@ export class GameScene extends Phaser.Scene {
     this.props = [];
     this.myId = null;
     this.myRole = null;
+    this._hideTags = false;   // 숨는이 H 토글: 모든 명찰/그림자 숨김(본인 시야)
     this.facingAngle = 0;
     this.lastSent = 0;
     this.audioCtx = null;
@@ -134,6 +136,7 @@ export class GameScene extends Phaser.Scene {
       openBracket: 'OPEN_BRACKET',    // [ 브러시 작게
       closeBracket: 'CLOSED_BRACKET', // ] 브러시 크게
       v: 'V', b: 'B',                 // V 마이크 ON/OFF · B 음성채팅 참여
+      h: 'H',                         // H 명찰/그림자 숨김 토글(숨는이)
       volDown: 'MINUS', volUp: 'PLUS', // − / = 음성 볼륨 조절
     }, false); // capture 끔 → 채팅 입력창에 글자가 정상 입력되도록
 
@@ -157,6 +160,8 @@ export class GameScene extends Phaser.Scene {
     this.reloadGfx = this.add.graphics().setDepth(DEPTH_EMOJI - 2).setVisible(false);
     // 잡힌 사람의 남은 그림 테두리(위치 표시) — 매 프레임 다시 그림
     this.deadGfx = this.add.graphics().setDepth(DEPTH_FOG - 1);
+    // 커스텀 마우스 커서(DOM): 캔버스/UI/셰이더 위에 항상 표시 + 마우스를 따라다님
+    this._setupCursor();
 
     this._lastCell = null;      // 빠르게 움직일 때 점 끊김 방지용(직전 칠한 셀)
     this._lastPaintCell = null; // Shift+클릭 직선용 앵커(마지막으로 실제 칠한 칸)
@@ -165,10 +170,10 @@ export class GameScene extends Phaser.Scene {
     this.input.on('pointerdown', (ptr) => {
       if (this.chatOpen) { this.chatInput.blur(); return; } // 게임(캔버스) 클릭 시 채팅 해제
       if (!this.board.isOpen()) {
-        // 그리는 중이 아닐 때: 술래 좌클릭 = 사격
-        if (this.myRole === 'seeker' && !this.caught && !this.gameEnded &&
-            this.drawState === 'closed' && ptr.leftButtonDown()) {
-          this._shoot();
+        // 그리는 중이 아닐 때
+        if (ptr.leftButtonDown() && !this.caught && !this.gameEnded && this.drawState === 'closed') {
+          this._playPointerClick();                 // 좌클릭 시 커스텀 포인터 클릭 애니(술래/숨는이 공통)
+          if (this.myRole === 'seeker') this._shoot(); // 술래는 추가로 사격
         }
         return;
       }
@@ -531,6 +536,58 @@ export class GameScene extends Phaser.Scene {
   }
 
   // ===========================================================================
+  // 커스텀 마우스 커서(DOM) 초기화: 마우스를 따라다니게 위치 갱신
+  _setupCursor() {
+    this._cursorEl = document.getElementById('game-cursor');
+    this._rangeEl = document.getElementById('game-cursor-range');  // 사거리 끝 마커
+    this._cursorShown = false;
+    this._rangeShown = false;
+    this._cursorAnimTimer = null;
+    this._rangeAnimTimer = null;
+    this._cursorOut = false;  // 술래 사거리 밖 여부 — 밖이면 crosshairs2.png 사용
+    if (!this._cursorEl) return;
+    this._onCursorMove = (e) => {
+      this._cursorEl.style.left = e.clientX + 'px';
+      this._cursorEl.style.top = e.clientY + 'px';
+    };
+    window.addEventListener('mousemove', this._onCursorMove);
+  }
+
+  // 역할별 커서 이미지: 술래=크로스헤어 / 숨는이=cursor
+  // 두 시트 모두 hotspot(조준점·화살표 끝)이 프레임 중앙(7,7)이라 정렬은 -50%,-50% 로 동일
+  _applyCursorRole(role) {
+    const el = this._cursorEl;
+    if (!el) return;
+    const seeker = role === 'seeker';
+    el.style.backgroundImage = `url('ui/${seeker ? 'crosshairs' : 'cursor'}.png')`;
+    el.style.transform = 'translate(-50%, -50%)';
+    el.style.backgroundPosition = '0 0';
+    this._cursorOut = false;
+  }
+
+  // 커서 클릭 애니(좌클릭 시 무조건): 프레임 2→3→4 재생 후 1(0번)로 복귀, frameRate 11(절반)
+  //  메인 커서 + (사거리 밖이면) 사거리 끝 마커 둘 다 재생
+  _playPointerClick() {
+    this._animCursorEl(this._cursorEl, '_cursorAnimTimer');
+    if (this._rangeShown) this._animCursorEl(this._rangeEl, '_rangeAnimTimer');
+  }
+
+  // 단일 커서 DOM 에 클릭 애니 재생(background-position 프레임 전환)
+  _animCursorEl(el, timerKey) {
+    if (!el) return;
+    if (this[timerKey]) { clearInterval(this[timerKey]); this[timerKey] = null; }
+    const seq = [1, 2, 3, 0];   // 2,3,4 번 프레임 → 1번(0) 복귀
+    const frameMs = 1000 / 11;
+    let i = 0;
+    const step = () => {
+      el.style.backgroundPosition = (-60 * seq[i]) + 'px 0';
+      i += 1;
+      if (i >= seq.length) { clearInterval(this[timerKey]); this[timerKey] = null; }
+    };
+    step();
+    this[timerKey] = window.setInterval(step, frameMs);
+  }
+
   // 사격(술래) — 마우스 방향으로 발사, 시야 안 숨는이에 맞으면 잡음
   // ===========================================================================
   _shoot() {
@@ -564,7 +621,7 @@ export class GameScene extends Phaser.Scene {
     const mx = ox + ux * (32 * me.scale) + fx * (10 * me.scale);
     const my = (me.y - 60 * me.scale - off) + uy * (32 * me.scale); // 총구쪽(점프 높이 반영)
     const destX = ox + ux * len, destY = oy + uy * len;
-    this._drawTracer(mx, my, destX, destY);           // 총구 → 목적지까지 이어지는 탄선
+    this._drawTracer(mx, my, destX, destY);           // 총구 → 목적지 탄선(아주 옅게)
     this._impactEffect(destX, destY);                 // 목적지 임팩트(커서)
     this._muzzleFlash(mx, my, Math.atan2(uy, ux));    // 총구 플래시
     this._playShot();
@@ -588,11 +645,10 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  // 총구에서 짧게만 뻗는 탄선(맵 전체를 가로지르지 않음)
-  // 총구 → 목적지(커서)까지 이어지는 탄선. pixelArt 라 얇은 대각선이 끊겨 보여 약간 두껍게.
+  // 총구 → 목적지(커서) 탄선. 아주 옅게만 깜빡이고 곧 사라짐.
   _drawTracer(x1, y1, x2, y2) {
     const line = this.add.graphics().setDepth(DEPTH_EMOJI + 1);
-    line.lineStyle(4, 0xfff2a0, 0.16); // 흐릿하게(0.16)
+    line.lineStyle(6, 0xfff2a0, 0.15); // 옅게
     line.lineBetween(x1, y1, x2, y2);
     this.tweens.add({ targets: line, alpha: 0, duration: 200, onComplete: () => line.destroy() });
   }
@@ -837,6 +893,8 @@ export class GameScene extends Phaser.Scene {
       players.forEach((p) => this._addPlayer(p));
       this._updateRoleBadge();
       this._buildHud();
+      // 마우스 포인터: 술래=크로스헤어(중앙 정렬), 숨는이=cursor(좌상단 화살표 끝 기준)
+      this._applyCursorRole(role);
     });
 
     socket.on('playerJoined', (p) => this._addPlayer(p));
@@ -1042,8 +1100,13 @@ export class GameScene extends Phaser.Scene {
       { key: 'R', label: '휘파람', act: () => this._actWhistle() },
       { key: 'SPACE', label: '점프', act: () => this._actJump() },
     );
+    if (!seeker) {
+      // 숨는이 전용: 모든 명찰/그림자 숨김 토글
+      btns.push({ key: 'H', label: this._hideTags ? '명찰표시' : '명찰숨김', tags: true, act: () => this._toggleTags() });
+    }
     hud.innerHTML = '';
     this._canvasLblEl = null;
+    this._tagsLblEl = null;
     btns.forEach((b) => {
       const el = document.createElement('button');
       el.type = 'button';
@@ -1051,8 +1114,15 @@ export class GameScene extends Phaser.Scene {
       el.innerHTML = `<span class="hud-lbl">${b.label}</span><span class="hud-key">${b.key}</span>`;
       el.addEventListener('click', () => { b.act(); el.blur(); }); // 누른 뒤 포커스 해제(스페이스 재입력 방지)
       if (b.canvas) this._canvasLblEl = el.querySelector('.hud-lbl'); // 위장↔위장취소 라벨 토글용
+      if (b.tags) this._tagsLblEl = el.querySelector('.hud-lbl');     // 명찰숨김↔명찰표시 라벨 토글용
       hud.appendChild(el);
     });
+  }
+
+  // 숨는이: 모든 명찰/그림자 숨김 토글(본인 시야에만). update 의 렌더 루프가 _hideTags 를 반영.
+  _toggleTags() {
+    this._hideTags = !this._hideTags;
+    if (this._tagsLblEl) this._tagsLblEl.textContent = this._hideTags ? '명찰표시' : '명찰숨김';
   }
 
   // 음성 컨트롤 UI 바인딩(헤드셋/마이크 버튼 + 볼륨 슬라이더). create 에서 1회 호출.
@@ -1336,6 +1406,9 @@ export class GameScene extends Phaser.Scene {
     if (!locked && Phaser.Input.Keyboard.JustDown(this.keys.q)) this._actDraw();
     //  R = 휘파람
     if (!locked && Phaser.Input.Keyboard.JustDown(this.keys.r)) this._actWhistle();
+    //  H = (숨는이) 모든 명찰/그림자 숨김 토글 — 본인 시야에만
+    if (!locked && !this.chatOpen && !isSeeker &&
+        Phaser.Input.Keyboard.JustDown(this.keys.h)) this._toggleTags();
     //  T = 채팅 입력창 열기 (그리는 중이 아닐 때)
     if (Phaser.Input.Keyboard.JustDown(this.keys.t) &&
         (this.drawState === 'closed' || this.drawState === 'holding')) {
@@ -1531,6 +1604,13 @@ export class GameScene extends Phaser.Scene {
       p.label.x = p.x;
       p.label.y = p.y - HEAD_OFF * p.scale - 22 - off;
       p.label.setDepth(p.y + 0.1);
+
+      // 명찰/그림자 표시 여부(본인 시야에만 적용):
+      //  · 술래  → 남(숨는이)의 명찰/그림자는 숨김(본인 것만 표시)
+      //  · 숨는이 → H 토글(_hideTags) 시 모든 사람 숨김
+      const tagShow = this.myRole === 'seeker' ? (id === this.myId) : !this._hideTags;
+      p.shadow.setVisible(tagShow);
+      p.label.setVisible(tagShow);
     });
 
     if (me) this.cameraTarget.setPosition(me.x, me.y - VIS_OFFY * me.scale);
@@ -1561,6 +1641,47 @@ export class GameScene extends Phaser.Scene {
     // [2단계] 그리기 오버레이(캐릭터 위 격자) — 'drawing' 상태에서만
     if (this.drawState === 'drawing' && me) {
       this._renderDrawOverlay(me);
+    }
+
+    // 커스텀 포인터(술래=크로스헤어 / 숨는이=cursor): 평소 표시, 그리기/잡힘/게임종료 시엔 숨김
+    if (this._cursorEl && this.myRole) {
+      const show = !this.caught && !this.gameEnded
+        && this.drawState === 'closed' && !this.board.isOpen();
+      if (show !== this._cursorShown) {
+        this._cursorShown = show;
+        this._cursorEl.style.display = show ? 'block' : 'none';
+        document.body.classList.toggle('cursor-hidden', show);
+        if (!show && this._rangeEl && this._rangeShown) {  // 커서 숨길 땐 사거리 마커도 숨김
+          this._rangeShown = false; this._rangeEl.style.display = 'none';
+        }
+      }
+      // 술래: 조준점이 술래 기점 사거리(GUN_RANGE) 밖이면…
+      //  · 마우스 커서 → crosshairs2.png (못 닿음 표시)
+      //  · 사거리 끝(실제 탄착 지점) → 원래 크로스헤어 마커 표시
+      if (show && this.myRole === 'seeker' && me) {
+        const off = me.z || 0;
+        const oy = me.y - VIS_OFFY * me.scale - off;   // _shoot 와 동일한 조준 원점
+        const ptr = this.input.activePointer;
+        const dx = ptr.worldX - me.x, dy = ptr.worldY - oy;
+        const dist = Math.hypot(dx, dy) || 1;
+        const out = dist > GUN_RANGE;
+        if (out !== this._cursorOut) {
+          this._cursorOut = out;
+          this._cursorEl.style.backgroundImage = `url('ui/${out ? 'crosshairs2' : 'crosshairs'}.png')`;
+        }
+        if (this._rangeEl) {
+          if (out) {
+            // 사거리 끝 지점(월드) → 화면 좌표 변환(zoom=1: world - scroll)
+            const k = GUN_RANGE / dist;
+            const cam = this.cameras.main;
+            this._rangeEl.style.left = (me.x + dx * k - cam.scrollX) + 'px';
+            this._rangeEl.style.top = (oy + dy * k - cam.scrollY) + 'px';
+            if (!this._rangeShown) { this._rangeShown = true; this._rangeEl.style.display = 'block'; }
+          } else if (this._rangeShown) {
+            this._rangeShown = false; this._rangeEl.style.display = 'none';
+          }
+        }
+      }
     }
   }
 }

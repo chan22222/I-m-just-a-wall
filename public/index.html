@@ -14,6 +14,11 @@
   <!-- Phaser 캔버스가 들어갈 컨테이너 -->
   <div id="game-root"></div>
 
+  <!-- 커스텀 마우스 커서(술래=크로스헤어 / 숨는이=cursor). 캔버스·UI·셰이더 위에 항상 표시 -->
+  <div id="game-cursor" aria-hidden="true"></div>
+  <!-- 술래 사거리 끝 마커: 조준이 사거리 밖일 때 실제 탄착 지점(사거리 끝)에 원래 크로스헤어 표시 -->
+  <div id="game-cursor-range" aria-hidden="true"></div>
+
   <!-- 조작 안내 HUD (역할이 정해지면 JS가 해당 역할 조작만 채움) -->
   <div id="hud" class="hud-card"></div>
 

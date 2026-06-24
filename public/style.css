@@ -19,6 +19,40 @@ html, body {
 }
 #game-root canvas { display: block; }
 
+/* ---- 커스텀 마우스 커서 (DOM: 캔버스/UI/셰이더 위에 항상) ---- */
+/* 원본 시트 60×15(15×15 4프레임)을 4배 확대 → 시트 240×60, 한 프레임 60×60 */
+#game-cursor {
+  position: fixed;
+  left: 0; top: 0;
+  width: 60px; height: 60px;
+  pointer-events: none;            /* 클릭이 그대로 게임/UI 로 통과 */
+  z-index: 100000;                 /* 모든 UI 위 */
+  background-repeat: no-repeat;
+  background-size: 240px 60px;
+  background-position: 0 0;         /* 0번 프레임(평소) */
+  image-rendering: pixelated;      /* 도트 또렷하게 */
+  display: none;                   /* 역할이 정해지면 표시 */
+}
+/* 술래 사거리 끝 마커(월드 좌표 → 화면 변환은 JS). 원래 크로스헤어로 실제 탄착 지점 표시 */
+#game-cursor-range {
+  position: fixed;
+  left: 0; top: 0;
+  width: 60px; height: 60px;
+  pointer-events: none;
+  z-index: 99999;                  /* 메인 커서(100000) 바로 아래 */
+  background-image: url('ui/crosshairs.png');
+  background-repeat: no-repeat;
+  background-size: 240px 60px;
+  background-position: 0 0;
+  image-rendering: pixelated;
+  transform: translate(-50%, -50%);
+  opacity: 0.4;
+  display: none;
+}
+
+/* 커스텀 커서가 보일 때 OS 커서 숨김(캔버스+UI 전부) */
+body.cursor-hidden, body.cursor-hidden * { cursor: none !important; }
+
 /* ---- HUD 도움말 (좌하단, 픽셀 카드 / 역할별 '클릭 버튼') ---- */
 #hud {
   left: 14px;
