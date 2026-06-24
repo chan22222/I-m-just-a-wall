@@ -86,6 +86,9 @@ export class GameScene extends Phaser.Scene {
     this.load.image('ts_water', SL + 'Tilesets/Water.png');
     this.load.image('ts_dirt',  SL + 'Tilesets/Tilled_Dirt_v2.png');
     this.load.image('obj_biom', SL + 'Objects/Basic_Grass_Biom_things.png');
+    this.load.image('obj_coop', SL + 'Objects/Free_Chicken_House.png');   // 닭장(오두막)
+    this.load.image('obj_bridge', SL + 'Objects/Wood_Bridge.png');        // 나무 다리
+    this.load.image('obj_chest', SL + 'Objects/Chest.png');               // 보물상자
     this.load.spritesheet('ts_fence', SL + 'Tilesets/Fences.png', { frameWidth: 16, frameHeight: 16 });
     // 커스텀 마우스 커서(크로스헤어/cursor)는 DOM(#game-cursor)으로 렌더 → Phaser 텍스처 불필요
     // 숨는이: HIDER/<색> 3종(gray/lemon/orange), 구조 동일

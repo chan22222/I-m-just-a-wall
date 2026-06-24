@@ -121,7 +121,7 @@ export class MapBuilder {
     const placed = [];
     const tooClose = (px, py, d) => placed.some((q) => Math.hypot(q.x - px, q.y - py) < d);
     const trees = ['tree_m', 'tree_a', 'tree_s', 'tree_m'];
-    const props = ['bush', 'bush2', 'stump', 'log'];
+    const props = ['bush', 'bush2', 'stump', 'log', 'rock_l', 'rock_s', 'rock_l'];
     const treeWant = Math.min(60, Math.floor(inner.length * 0.06));
     const propWant = Math.min(34, Math.floor(inner.length * 0.035));
     const pick = () => inner[Math.floor(rnd() * inner.length)];
@@ -141,6 +141,42 @@ export class MapBuilder {
       const key = props[Math.floor(rnd() * props.length)];
       this._obj(px, py, key);
       if (key === 'bush' || key === 'bush2') this.obstacles.push({ x: px - 34, y: py, w: 68, h: 26 });
+      else if (key === 'rock_l' || key === 'rock_s') this.obstacles.push({ x: px - 26, y: py - 4, w: 52, h: 24 });
+      placed.push({ x: px, y: py }); i++;
+    }
+
+    // 장식(버섯/꽃/해바라기) — 충돌 없음
+    const decos = ['mush_r', 'mush_p', 'sunflower', 'flower_p', 'flower_y', 'flower_p', 'flower_y'];
+    const decoWant = Math.min(44, Math.floor(inner.length * 0.045));
+    for (let i = 0, tries = 0; i < decoWant && tries < decoWant * 16; tries++) {
+      const c = pick(); if (!c) break;
+      const px = (c.tx + 0.5) * T, py = (c.ty + 1) * T;
+      if (tooClose(px, py, T * 1.1)) continue;
+      this._obj(px, py, decos[Math.floor(rnd() * decos.length)]);
+      placed.push({ x: px, y: py }); i++;
+    }
+
+    // 닭장(오두막) — 큰 섬 내부 고정 위치, 충돌(은폐)
+    [{ tx: 48, ty: 33 }, { tx: 23, ty: 46 }, { tx: 85, ty: 46 }].forEach((c) => {
+      if (!at(c.tx, c.ty)) return;
+      const px = (c.tx + 0.5) * T, py = (c.ty + 1) * T;
+      this._place(px, py, 'obj_coop', undefined, 3);
+      this.obstacles.push({ x: px - 42, y: py - 30, w: 84, h: 32 });
+      placed.push({ x: px, y: py });
+    });
+
+    // 나무 다리 — 다리 목 위에 바닥으로 깔기(반투명 제외, 캐릭터 아래)
+    [{ tx: 35, ty: 21 }, { tx: 70, ty: 21 }, { tx: 36, ty: 40 }, { tx: 69, ty: 40 }].forEach((b) => {
+      if (!at(b.tx, b.ty)) return;
+      this._place((b.tx + 0.5) * T, (b.ty + 1.2) * T, 'obj_bridge', 'bridge_h', SCALE, -990);
+    });
+
+    // 보물상자 — 포인트 장식
+    for (let i = 0, tries = 0; i < 5 && tries < 60; tries++) {
+      const c = pick(); if (!c) break;
+      const px = (c.tx + 0.5) * T, py = (c.ty + 1) * T;
+      if (tooClose(px, py, T * 1.5)) continue;
+      this._place(px, py, 'obj_chest', 'chest0', 3);
       placed.push({ x: px, y: py }); i++;
     }
 
@@ -184,19 +220,30 @@ export class MapBuilder {
 
   _defineFrames() {
     const tex = this.scene.textures.get('obj_biom');
-    if (tex.has('tree_m')) return;
-    const F = {
-      tree_s: [0, 0, 16, 31], tree_m: [17, 0, 29, 31], tree_a: [49, 0, 29, 31],
-      bush: [0, 47, 34, 17], bush2: [35, 63, 34, 16], stump: [79, 66, 18, 13], log: [63, 48, 18, 15],
-    };
-    Object.keys(F).forEach((k) => { const v = F[k]; tex.add(k, 0, v[0], v[1], v[2], v[3]); });
+    if (!tex.has('tree_m')) {
+      const F = {
+        tree_s: [0, 0, 16, 31], tree_m: [17, 0, 29, 31], tree_a: [49, 0, 29, 31],
+        bush: [0, 47, 34, 17], bush2: [35, 63, 34, 16], stump: [79, 66, 18, 13], log: [63, 48, 18, 15],
+        rock_l: [128, 16, 16, 15], rock_s: [112, 16, 13, 12],            // 바위(은폐)
+        mush_r: [96, 1, 13, 13], mush_p: [112, 0, 13, 14],               // 버섯
+        sunflower: [128, 32, 15, 30], flower_p: [96, 48, 13, 13], flower_y: [96, 33, 12, 11], // 꽃/해바라기
+      };
+      Object.keys(F).forEach((k) => { const v = F[k]; tex.add(k, 0, v[0], v[1], v[2], v[3]); });
+    }
+    const tb = this.scene.textures.get('obj_bridge');
+    if (tb && !tb.has('bridge_h')) tb.add('bridge_h', 0, 32, 0, 31, 16); // 가로 다리
+    const tc = this.scene.textures.get('obj_chest');
+    if (tc && !tc.has('chest0')) tc.add('chest0', 0, 16, 14, 26, 18);    // 닫힌 상자
   }
 
-  _obj(px, py, key) {
+  _obj(px, py, key) { return this._place(px, py, 'obj_biom', key, SCALE); }
+
+  // 오브젝트 배치. depthOff 가 주어지면 바닥(다리)으로 깔고 반투명 대상에서 제외
+  _place(px, py, texKey, frame, scale, depthOff) {
     const s = this.scene;
-    const img = s.add.image(px, py, 'obj_biom', key).setOrigin(0.5, 1).setScale(SCALE).setDepth(py);
-    // 플레이어 주변 반경에 들면 반투명 처리용
-    this.objects.push({ img, x: px, y: py });
+    const isFloor = depthOff != null;
+    const img = s.add.image(px, py, texKey, frame).setOrigin(0.5, 1).setScale(scale).setDepth(isFloor ? depthOff : py);
+    if (!isFloor) this.objects.push({ img, x: px, y: py }); // 본인 주변 반경 반투명용
     return img;
   }
 }
