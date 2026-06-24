@@ -118,7 +118,8 @@ export class MapBuilder {
     }
 
     // 나무/덤불 산포(내부 셀에서만, 서로 겹치지 않게)
-    const placed = [];
+    // 리스폰존(서버 스폰 좌표와 동일: 3400,2640)을 미리 등록해 주변에 오브젝트가 안 생기게 함
+    const placed = [{ x: 3400, y: 2640 }];
     const tooClose = (px, py, d) => placed.some((q) => Math.hypot(q.x - px, q.y - py) < d);
     const trees = ['tree_m', 'tree_a', 'tree_s', 'tree_m'];
     const props = ['bush', 'bush2', 'stump', 'log', 'rock_l', 'rock_s', 'rock_l'];

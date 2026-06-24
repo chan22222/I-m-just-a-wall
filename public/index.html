@@ -22,6 +22,12 @@
   <!-- 조작 안내 HUD (역할이 정해지면 JS가 해당 역할 조작만 채움) -->
   <div id="hud" class="hud-card"></div>
 
+  <!-- 점수판 (상단 중앙). 서버 'scores' 이벤트로 갱신 -->
+  <div id="scoreboard" class="hud-card"></div>
+
+  <!-- 점수 획득 팝업 (가운데 하단, 사유+점수) -->
+  <div id="score-pop" aria-hidden="true"></div>
+
   <!-- 역할 표시 (픽셀 HUD 카드) -->
   <div id="role-badge" class="hud-card">
     <span class="rb-icon">

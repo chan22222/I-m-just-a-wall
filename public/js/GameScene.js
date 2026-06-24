@@ -642,6 +642,7 @@ export class GameScene extends Phaser.Scene {
     this._slowUntil = now + SLOW_MS; // 발사 후 아주 짧은 둔화(매 발)
     this._gunCdFrom = now;           // 재장전 바 진행도 계산용 시작 시각
     if (hit) {
+      this._pendingKillName = this._nameOf(hit.id); // 점수 팝업용(처치 대상 닉네임)
       if (this.socket) this.socket.emit('catch', { targetId: hit.id });
       this._gunCdUntil = now + GUN_CD;
     } else {
@@ -904,6 +905,18 @@ export class GameScene extends Phaser.Scene {
 
     socket.on('playerJoined', (p) => this._addPlayer(p));
 
+    // 점수판: 본인 점수는 즉시, 남의 점수는 20초마다 갱신(점수판에 카운트다운 표시)
+    socket.on('scores', (latest) => this._onScores(latest));
+    this._nextSyncAt = Date.now() + 20000;
+    this._scoreSyncTimer = window.setInterval(() => {
+      const now = Date.now();
+      if (now >= this._nextSyncAt && this._latestScores) {
+        this._displayScores = this._latestScores.map((s) => ({ ...s }));
+        this._nextSyncAt = now + 20000;
+      }
+      if (this._displayScores) this._renderScoreboard(this._displayScores); // 매초 카운트다운 갱신
+    }, 1000);
+
     socket.on('playerMoved', ({ id, x, y, angle, z, anim, flip, holding }) => {
       const p = this.players.get(id);
       if (!p) return;
@@ -1122,6 +1135,108 @@ export class GameScene extends Phaser.Scene {
       if (b.tags) this._tagsLblEl = el.querySelector('.hud-lbl');     // 명찰숨김↔명찰표시 라벨 토글용
       hud.appendChild(el);
     });
+  }
+
+  // 서버 점수 수신: 본인 점수는 즉시 반영, 남의 점수는 직전 표시값 유지(30초 타이머가 동기화)
+  _onScores(latest) {
+    if (!Array.isArray(latest)) return;
+    this._latestScores = latest;
+    // 본인 점수 증가분 → 가운데 하단 팝 텍스트 + 효과음
+    const meLatest = latest.find((s) => s.id === this.myId);
+    if (meLatest) {
+      if (this._myScore != null && meLatest.score > this._myScore) {
+        this._showScorePop(meLatest.score - this._myScore);
+        this._playScoreSfx();
+      }
+      this._myScore = meLatest.score;
+    }
+    const prevById = {};
+    (this._displayScores || []).forEach((s) => { prevById[s.id] = s; });
+    this._displayScores = latest.map((s) => {
+      if (s.id === this.myId) return { ...s };          // 본인: 즉시 최신
+      const old = prevById[s.id];
+      return old ? { ...s, score: old.score } : { ...s }; // 남: 점수만 직전값, 새 멤버는 최신
+    });
+    this._renderScoreboard(this._displayScores);
+  }
+
+  // 점수 획득 팝업(가운데 하단): 상대 닉네임 + 점수, 색상 구분, 위로 떠오르며 사라짐
+  _showScorePop(delta) {
+    const host = document.getElementById('score-pop');
+    if (!host) return;
+    let reason;
+    if (this.myRole === 'seeker') {
+      const who = this._esc(this._pendingKillName || '상대');
+      reason = `<span style="color:#5fe08a">${who}</span> 처치 <span style="color:#ffd83b">+${delta}</span>`;
+    } else {
+      const who = this._esc(this._nearestSeekerName() || '술래');
+      reason = `<span style="color:#ff6b6b">${who}</span>의 시야 안 <span style="color:#ffd83b">+${delta}</span>`;
+    }
+    const el = document.createElement('div');
+    el.className = 'score-pop-item';
+    el.innerHTML = reason;
+    host.appendChild(el);
+    void el.offsetWidth;          // 강제 reflow → 초기 상태 렌더 후 transition 발동(매번 동작)
+    el.classList.add('rise');
+    setTimeout(() => el.remove(), 2400);
+  }
+
+  // 점수판(서버 scores)에서 id 의 닉네임 조회
+  _nameOf(id) {
+    const s = (this._latestScores || []).find((x) => x.id === id);
+    return s ? s.name : null;
+  }
+
+  // 내(숨는이) 위치 기준 가장 가까운 술래의 닉네임
+  _nearestSeekerName() {
+    const me = this.players.get(this.myId);
+    if (!me) return null;
+    let best = Infinity, id = null;
+    this.players.forEach((p, pid) => {
+      if (p.role !== 'seeker' || p.caught) return;
+      const d = Math.hypot((p.x || 0) - me.x, (p.y || 0) - me.y);
+      if (d < best) { best = d; id = pid; }
+    });
+    return id ? this._nameOf(id) : null;
+  }
+
+  // 점수 획득 효과음(가벼운 틱)
+  _playScoreSfx() {
+    this._ensureAudio();
+    const ctx = this.audioCtx;
+    if (!ctx) return;
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = 'sine';
+    o.connect(g); g.connect(ctx.destination);
+    const now = ctx.currentTime;
+    o.frequency.setValueAtTime(1400, now);
+    o.frequency.exponentialRampToValueAtTime(1900, now + 0.05);
+    g.gain.setValueAtTime(0.0001, now);
+    g.gain.exponentialRampToValueAtTime(0.0385, now + 0.01); // 볼륨 30% 감소
+    g.gain.exponentialRampToValueAtTime(0.0001, now + 0.12);
+    o.start(now); o.stop(now + 0.14);
+  }
+
+  // 점수판 렌더: 점수 내림차순. 술래=킬 500 / 숨는이=술래 근접 초당 10
+  _renderScoreboard(scores) {
+    const el = document.getElementById('scoreboard');
+    if (!el || !Array.isArray(scores)) return;
+    const rows = scores.slice().sort((a, b) => b.score - a.score);
+    const remain = this._nextSyncAt ? Math.max(0, Math.ceil((this._nextSyncAt - Date.now()) / 1000)) : 20;
+    const html = [`<div class="sb-title">점수판 · 다음 갱신 ${remain}초</div>`];
+    rows.forEach((s) => {
+      const seeker = s.role === 'seeker';
+      const cls = `sb-row ${seeker ? 'seeker' : 'hider'}${s.id === this.myId ? ' me' : ''}${s.caught ? ' dead' : ''}`;
+      const dead = s.caught ? ' ❌' : '';
+      html.push(`<div class="${cls}"><span class="sb-tag">${seeker ? 'SEEKER' : 'HIDER'}</span>` +
+        `<span class="sb-name">${this._esc(s.name)}${dead}</span>` +
+        `<span class="sb-score">${s.score}</span></div>`);
+    });
+    el.innerHTML = html.join('');
+  }
+
+  _esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   }
 
   // 숨는이: 모든 명찰/그림자 숨김 토글(본인 시야에만). update 의 렌더 루프가 _hideTags 를 반영.
@@ -1519,7 +1634,12 @@ export class GameScene extends Phaser.Scene {
         p.shadow.x = p.x; p.shadow.y = corpseY - FEET_OFF * sc + 12;
         p.shadow.setScale(1);
         p.shadow.setVisible(true);
-        p.label.setVisible(false);
+        // 시체에도 닉네임 표시(머리 위)
+        p.label.x = p.x;
+        p.label.y = corpseY - 64 * sc;
+        p.label.setColor('#9aa0ab'); // 죽은 사람 이름은 회색
+        p.label.setDepth(p.y + 0.5);
+        p.label.setVisible(true);
         return;
       }
       if (id !== this.myId) {

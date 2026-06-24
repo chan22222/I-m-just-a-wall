@@ -69,12 +69,13 @@ io.on('connection', (socket) => {
       role,
       color: Math.floor(Math.random() * 3), // 숨는이 색(gray/lemon/orange) 랜덤 인덱스
       name: (name || `P-${socket.id.slice(0, 4)}`).toString().slice(0, 16),
-      // 중앙 섬의 안전 영역에서 스폰(군도 맵 — 물/호수 회피, 타일 64px)
-      x: 3000 + Math.random() * 800,
-      y: 2580 + Math.random() * 160,
+      // 리스폰존: 중앙 섬 장애물 없는 한 지점에 고정(겹침 방지용 미세 분산만)
+      x: 3400 + (Math.random() - 0.5) * 60,
+      y: 2640 + (Math.random() - 0.5) * 60,
       angle: 0,
       dataURL: null, // 아직 위장 그림 없음
       caught: false, // 술래에게 잡혔는지
+      score: 0,      // 점수(술래=킬 500 / 숨는이=술래 근접 초당 10)
     };
     room.players.set(socket.id, me);
 
@@ -88,6 +89,7 @@ io.on('connection', (socket) => {
 
     // 같은 방 다른 사람에게: 새 플레이어 입장 알림
     socket.to(roomId).emit('playerJoined', me);
+    broadcastScores(roomId); // 점수판 초기 동기화
 
     console.log(`[join] room=${roomId} id=${socket.id} role=${role} total=${room.players.size}`);
   });
@@ -159,7 +161,9 @@ io.on('connection', (socket) => {
     if (!shooter || shooter.role !== 'seeker') return;
     if (!target || target.role !== 'hider' || target.caught) return;
     target.caught = true;
+    shooter.score = (shooter.score || 0) + 500; // 킬 보너스
     io.to(currentRoomId).emit('playerCaught', { id: targetId });
+    broadcastScores(currentRoomId);
     // 안 잡힌 숨는이가 0명이면 술래 승리
     const remaining = [...room.players.values()].filter((p) => p.role === 'hider' && !p.caught).length;
     if (remaining === 0) io.to(currentRoomId).emit('gameOver', { winner: 'seeker' });
@@ -211,10 +215,39 @@ io.on('connection', (socket) => {
     leaveVoice();
     room.players.delete(socket.id);
     socket.to(currentRoomId).emit('playerLeft', { id: socket.id });
+    broadcastScores(currentRoomId);
     console.log(`[leave] room=${currentRoomId} id=${socket.id} total=${room.players.size}`);
     if (room.players.size === 0) rooms.delete(currentRoomId);
   });
 });
+
+// 점수판 동기화: 방 전체 플레이어의 점수/역할을 브로드캐스트
+function broadcastScores(roomId) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+  const scores = [...room.players.values()].map((p) => ({
+    id: p.id, name: p.name, role: p.role, score: p.score || 0, caught: !!p.caught,
+  }));
+  io.to(roomId).emit('scores', scores);
+}
+
+// 근접 점수: 술래가 SCORE_RANGE 안에 있는 숨는이는 초당 +10점(위험 보상)
+const SCORE_RANGE = 500;
+const SCORE_PER_SEC = 10;
+setInterval(() => {
+  for (const [roomId, room] of rooms) {
+    const players = [...room.players.values()];
+    const seekers = players.filter((p) => p.role === 'seeker' && !p.caught);
+    const hiders = players.filter((p) => p.role === 'hider' && !p.caught);
+    if (!seekers.length || !hiders.length) continue;
+    let changed = false;
+    for (const h of hiders) {
+      const near = seekers.some((s) => Math.hypot((s.x || 0) - (h.x || 0), (s.y || 0) - (h.y || 0)) < SCORE_RANGE);
+      if (near) { h.score = (h.score || 0) + SCORE_PER_SEC; changed = true; }
+    }
+    if (changed) broadcastScores(roomId);
+  }
+}, 1000);
 
 const PORT = process.env.PORT || 3000;
 // 0.0.0.0 → 같은 네트워크의 다른 기기에서도 접속 가능

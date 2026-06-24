@@ -102,6 +102,68 @@ body.cursor-hidden, body.cursor-hidden * { cursor: none !important; }
    픽셀(도트) 게임풍 HUD 카드 (공통)
    - 플랫 컬러 + 굵은 픽셀 베벨(밝은 좌상단 / 어두운 우하단) + 하드 그림자
    ============================================================ */
+/* ---- 점수 획득 팝업 (가운데 하단) ---- */
+#score-pop {
+  position: fixed;
+  left: 50%;
+  bottom: 110px;
+  z-index: 60;
+  pointer-events: none;
+}
+/* 각 팝업은 같은 기준점에서 절대 위치로 독립 → 서로 레이아웃 간섭(흔들림) 없음 */
+.score-pop-item {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  transform: translate(-50%, 0);
+  font-size: 15px;
+  font-weight: bold;
+  color: #e7e9ee;
+  white-space: nowrap;
+  text-shadow: 1px 1px 0 #0a0c14, -1px -1px 0 #0a0c14, 1px -1px 0 #0a0c14, -1px 1px 0 #0a0c14;
+  opacity: 1;
+  transition: opacity 2.2s ease-out, transform 2.2s ease-out;
+}
+.score-pop-item.rise { opacity: 0; transform: translate(-50%, -46px); }
+
+/* ---- 점수판 (상단 중앙) ---- */
+#scoreboard {
+  right: 14px;
+  bottom: 14px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  padding: 8px 10px;
+  min-width: 190px;
+  max-width: 300px;
+  z-index: 30;
+}
+#scoreboard:empty { display: none; }
+#scoreboard .sb-title {
+  font-size: 11px;
+  font-weight: bold;
+  color: #aeb6c6;
+  text-align: center;
+  margin-bottom: 2px;
+  letter-spacing: 1px;
+}
+.sb-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  color: #e7e9ee;
+  padding: 1px 2px;
+}
+.sb-tag { font-weight: bold; }
+.sb-row.seeker .sb-tag { color: #ff6b6b; }
+.sb-row.hider .sb-tag { color: #5fe08a; }
+.sb-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sb-row.me .sb-name { color: #ffd83b; }
+.sb-row.dead .sb-name { color: #9aa0ab; }
+.sb-score { font-weight: bold; font-variant-numeric: tabular-nums; min-width: 44px; text-align: right; }
+
 .hud-card {
   position: fixed;
   z-index: 20;
@@ -159,7 +221,7 @@ body.cursor-hidden, body.cursor-hidden * { cursor: none !important; }
 #role-badge.hider  .rb-icon  { color: #5be08a; }
 
 /* ---- 음성채팅 컨트롤 (우하단) ---- */
-#voice-panel { bottom: 14px; right: 14px; gap: 5px; padding: 6px 7px; }
+#voice-panel { bottom: 14px; left: 170px; gap: 5px; padding: 6px 7px; }
 #voice-panel .vc-btn {
   width: 32px;
   height: 32px;
