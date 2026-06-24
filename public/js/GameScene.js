@@ -324,6 +324,90 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  // 탐색 시간 / 정답 공개 카운트다운(모두 공용, 추격 카운트와 같은 위치)
+  _applyRoundTimer() {
+    const el = document.getElementById('round-timer');
+    if (!el) return;
+    let text = null;
+    if (this._phase === 'reveal' && this._revealEndAt) {
+      const s = Math.max(0, Math.ceil((this._revealEndAt - Date.now()) / 1000));
+      text = `📣 정답 공개 ${s}초`;
+    } else if (this._phase === 'playing' && this._hiderEndAt && !this.gameEnded) {
+      // 추격 시작 후에만 탐색 카운트(대기 중엔 wait-overlay 가 카운트)
+      const chasing = !this._seekerReleaseAt || Date.now() >= this._seekerReleaseAt;
+      if (chasing) {
+        const s = Math.max(0, Math.ceil((this._hiderEndAt - Date.now()) / 1000));
+        text = `🔍 탐색 종료까지 ${s}초`;
+      }
+    }
+    if (text) { el.textContent = text; el.classList.remove('hidden'); }
+    else if (!el.classList.contains('hidden')) el.classList.add('hidden');
+  }
+
+  // 정답 공개: 살아남은 숨는이를 시체처럼 노출하고, 위치 네비게이션 마커 생성
+  _startReveal(hiders) {
+    hiders.forEach((h) => {
+      const p = this.players.get(h.id);
+      if (p) p.caught = true; // 시체처럼 표시(위장 그림이 있으면 그림도 함께 노출)
+      if (h.id === this.myId) {
+        this.caught = true;
+        this._resetCanvasState();
+        const badge = document.getElementById('role-badge');
+        if (badge) {
+          badge.textContent = '🏁 라운드 종료 — 위치 공개';
+          badge.removeAttribute('data-tip');
+          badge.className = '';
+        }
+      }
+    });
+    this._clearRevealNav();
+    // 본인 외 살아남은 숨는이마다 화살표 + 닉네임
+    this._revealTargets = hiders.filter((h) => h.id !== this.myId).map((h) => this._makeNavMarker(h));
+    // 정답 공개와 동시에 숨는이 승리 메시지 표시(이미 승패 확정)
+    this._showWinMessage('hider');
+  }
+
+  _makeNavMarker(h) {
+    const arrow = this.add.triangle(0, 0, 8, 0, 0, 16, 16, 16, 0xffd83b)
+      .setScrollFactor(0).setDepth(99990).setOrigin(0.5, 0.5);
+    const label = this.add.text(0, 0, h.name, {
+      fontFamily: 'monospace', fontSize: '14px', fontStyle: 'bold', color: '#ffd83b',
+      backgroundColor: 'rgba(0,0,0,0.65)', padding: { x: 5, y: 2 },
+    }).setScrollFactor(0).setDepth(99991).setOrigin(0.5, 0.5);
+    return { id: h.id, x: h.x, y: h.y, arrow, label };
+  }
+
+  // 매 프레임 네비게이션 마커를 화면 위치(또는 가장자리 화살표)로 갱신
+  _updateRevealNav() {
+    if (this._phase !== 'reveal' || !this._revealTargets || !this._revealTargets.length) return;
+    const cam = this.cameras.main;
+    const wv = cam.worldView;
+    const W = cam.width, H = cam.height;
+    const cx = W / 2, cy = H / 2;
+    // 화살표 위치: 화면끝(가장자리)과 술래(중앙)의 중간쯤 — 중앙에서 화면 절반의 절반 거리
+    const reachX = cx * 0.5, reachY = cy * 0.5;
+    const screen = 24; // 실제 화면 안 판정 — 이 안으로 들어오면 마커 숨김
+    this._revealTargets.forEach((t) => {
+      const sx = (t.x - wv.x) / wv.width * W;
+      const sy = (t.y - wv.y) / wv.height * H;
+      const onScreen = sx >= screen && sx <= W - screen && sy >= screen && sy <= H - screen;
+      if (onScreen) { t.arrow.setVisible(false); t.label.setVisible(false); return; }
+      const dx = sx - cx, dy = sy - cy;
+      const ang = Math.atan2(dy, dx);
+      const sc = Math.min(reachX / Math.max(Math.abs(dx), 0.001), reachY / Math.max(Math.abs(dy), 0.001));
+      const mx = cx + dx * sc, my = cy + dy * sc;
+      t.arrow.setPosition(mx, my).setRotation(ang + Math.PI / 2).setVisible(true);
+      t.label.setPosition(mx, my - 20).setVisible(true);
+    });
+  }
+
+  _clearRevealNav() {
+    if (this._revealTargets) {
+      this._revealTargets.forEach((t) => { t.arrow.destroy(); t.label.destroy(); });
+    }
+    this._revealTargets = null;
+  }
+
   // 게임 맵(군도 중앙 리스폰존)으로 이동
   _teleportToGame() {
     const me = this.players.get(this.myId);
@@ -850,18 +934,85 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  _onGameOver(winner) {
+  _onGameOver(winner, returnMs = 0) {
     if (this.gameEnded) return;
     this.gameEnded = true;
+    this._clearRevealNav();
+    this._returnAt = returnMs > 0 ? Date.now() + returnMs : 0;
+    // 숨는이 승은 정답 공개와 동시에 이미 메시지를 띄웠으므로 새로 만들지 않음
+    if (winner === 'hider') return;
+    this._showWinMessage('seeker');
     const cam = this.cameras.main;
-    const msg = winner === 'seeker'
-      ? '🏆 SEEKER 승리\n모든 HIDER 검거!'
-      : 'GAME OVER';
-    this.add.text(cam.width / 2, cam.height / 2, msg, {
-      fontFamily: 'sans-serif', fontSize: '34px', fontStyle: 'bold',
-      color: '#ffffff', backgroundColor: 'rgba(0,0,0,0.72)',
-      padding: { x: 26, y: 18 }, align: 'center',
+    // 로비 복귀 안내(술래 승은 10초 카운트) — 승리 메시지 아래
+    this._gameOverSub = this.add.text(cam.width / 2, cam.height * 0.66 + 62, '', {
+      fontFamily: 'sans-serif', fontSize: '18px', fontStyle: 'bold',
+      color: '#e7e9ee', stroke: '#101218', strokeThickness: 5, align: 'center',
     }).setOrigin(0.5).setScrollFactor(0).setDepth(99999);
+  }
+
+  // 승리 메시지(중앙). 정답 공개 시작(숨는이 승) 또는 게임 종료(술래 승) 시 한 번만 생성
+  _showWinMessage(winner) {
+    if (this._gameOverText) return;
+    const cam = this.cameras.main;
+    const msg = winner === 'seeker' ? 'SEEKER 승리!' : 'HIDER 승리!';
+    this._gameOverText = this.add.text(cam.width / 2, cam.height * 0.66, msg, {
+      fontFamily: 'sans-serif', fontSize: '40px', fontStyle: 'bold',
+      color: '#ffffff', stroke: '#101218', strokeThickness: 8,
+      align: 'center', lineSpacing: 4,
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(99999);
+  }
+
+  // 종료 화면의 로비 복귀 카운트 갱신(매 프레임)
+  _applyGameOverCountdown() {
+    if (!this._gameOverSub) return;
+    if (this._returnAt) {
+      const s = Math.max(0, Math.ceil((this._returnAt - Date.now()) / 1000));
+      this._gameOverSub.setText(s > 0 ? `${s}초 후 로비로 돌아갑니다` : '로비로 이동 중…');
+    } else {
+      this._gameOverSub.setText('곧 로비로 돌아갑니다…');
+    }
+  }
+
+  // 라운드 종료 후 로비로 복귀: 화면/상태/역할/위치 초기화(서버 returnToLobby)
+  _returnToLobby(players) {
+    this._clearRevealNav();
+    if (this._gameOverText) { this._gameOverText.destroy(); this._gameOverText = null; }
+    if (this._gameOverSub) { this._gameOverSub.destroy(); this._gameOverSub = null; }
+    this._returnAt = 0;
+    ['wait-overlay', 'round-timer', 'whistle-timer'].forEach((id) => {
+      const e = document.getElementById(id); if (e) e.classList.add('hidden');
+    });
+    this._phase = 'lobby';
+    this.gameEnded = false;
+    this.caught = false;
+    this._seekerReleaseAt = 0; this._nextWhistleAt = 0; this._hiderEndAt = 0; this._revealEndAt = 0;
+    // 감염 시체 등 클라 전용 잔여 엔티티 제거(다음 판에 남지 않도록)
+    for (const [id, p] of [...this.players]) {
+      if (p.isCorpse) {
+        ['shadow', 'body', 'skin', 'label', 'gun', 'gunShot'].forEach((k) => { if (p[k]) p[k].destroy(); });
+        this.players.delete(id);
+      }
+    }
+    // 모든 플레이어 역할/위치/잡힘 리셋(로비는 모두 숨는이)
+    players.forEach((info) => {
+      let p = this.players.get(info.id);
+      if (!p) { this._addPlayer(info); return; }
+      if (p.role !== info.role) { this._changeRole(info.id, info.role); p = this.players.get(info.id); }
+      if (!p) return;
+      p.caught = false;
+      p.x = info.x; p.y = info.y;
+      p.target.x = info.x; p.target.y = info.y;
+      p.z = 0; p.zVel = 0;
+    });
+    this.myRole = 'hider';
+    this._resetCanvasState();
+    this._updateRoleBadge();
+    this._buildHud();
+    this._applyCursorRole('hider');
+    this._updateStartButton();
+    const me = this.players.get(this.myId);
+    this.cameras.main.zoomTo(1, 0);
+    if (me) this.cameras.main.centerOn(me.x, me.y);
   }
 
   // 스포이드 찍기 모드 on/off (버튼 강조 + 커서 변경)
@@ -1220,7 +1371,7 @@ export class GameScene extends Phaser.Scene {
     socket.on('roomCreated', ({ roomId } = {}) => { this._myRoomCode = roomId; });
     socket.on('joinError', ({ message } = {}) => this._titleMsg(message || '입장에 실패했습니다.'));
 
-    socket.on('init', ({ id, role, caught, world, players, roomId, isPublic, phase, isHost, seekerRemainMs, whistleRemainMs, options }) => {
+    socket.on('init', ({ id, role, caught, world, players, roomId, isPublic, phase, isHost, seekerRemainMs, whistleRemainMs, hiderRemainMs, revealRemainMs, options }) => {
       this.myId = id;
       this.myRole = role;
       if (world) this.world = world;
@@ -1243,6 +1394,9 @@ export class GameScene extends Phaser.Scene {
       // 강제 휘파람 카운트다운(게임 중 입장 시 남은 시간 반영)
       this._nextWhistleAt = (this._phase === 'playing' && this._mode !== 'infection' && whistleRemainMs > 0)
         ? Date.now() + whistleRemainMs : 0;
+      // 탐색/정답 공개 카운트다운(게임 중 입장 시 남은 시간 반영)
+      this._hiderEndAt = (this._phase === 'playing' && hiderRemainMs > 0) ? Date.now() + hiderRemainMs : 0;
+      this._revealEndAt = (this._phase === 'reveal' && revealRemainMs > 0) ? Date.now() + revealRemainMs : 0;
       this._updateStartButton();
       // 게임 중 입장(늦참): 게임 맵으로. 술래는 남은 대기가 있으면 대기 후 update 가 보냄.
       if (this._phase === 'playing') {
@@ -1260,6 +1414,9 @@ export class GameScene extends Phaser.Scene {
       this._seekerReleaseAt = Date.now() + (seekerRemainMs || 0);
       // 강제 휘파람 카운트다운 시작(감염모드는 없음)
       this._nextWhistleAt = this._mode !== 'infection' ? Date.now() + this._whistleInterval() : 0;
+      // 탐색 종료 시각(추격 시작 + 탐색 시간) — 모두 카운트다운 공유
+      this._hiderEndAt = Date.now() + (seekerRemainMs || 0) + ((this._options && this._options.hiderTime) || 200) * 1000;
+      this._revealEndAt = 0;
       if (this.myRole === 'hider') this._teleportToGame();
     });
 
@@ -1286,6 +1443,13 @@ export class GameScene extends Phaser.Scene {
     // 누군가 직접 휘파람을 불어 강제 타이머가 리셋됨(방 전체 동기화)
     socket.on('whistleReset', ({ remainMs } = {}) => {
       this._nextWhistleAt = Date.now() + (remainMs || this._whistleInterval());
+    });
+
+    // 탐색 시간 종료 → 정답 공개: 살아남은 숨는이를 시체처럼 노출 + 위치 네비게이션
+    socket.on('revealStart', ({ remainMs, hiders } = {}) => {
+      this._phase = 'reveal';
+      this._revealEndAt = Date.now() + (remainMs || 0);
+      this._startReveal(hiders || []);
     });
 
     socket.on('playerJoined', (p) => this._addPlayer(p));
@@ -1319,7 +1483,8 @@ export class GameScene extends Phaser.Scene {
     socket.on('playerWhistled', ({ id, x, y }) => this._onWhistle(id, x, y));
     socket.on('chatMessage', ({ id, name, text }) => this._addChatMessage(name, text, id === this.myId));
     socket.on('playerCaught', ({ id }) => this._onCaught(id));
-    socket.on('gameOver', ({ winner }) => this._onGameOver(winner));
+    socket.on('gameOver', ({ winner, returnMs } = {}) => this._onGameOver(winner, returnMs));
+    socket.on('returnToLobby', ({ players } = {}) => this._returnToLobby(players || []));
     socket.on('playerShot', ({ id }) => {
       const p = this.players.get(id);
       if (!p) return;
@@ -1524,6 +1689,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   _actWhistle(forced = false) {
+    if (this.myRole === 'seeker') return; // 술래는 휘파람을 불지 않음(위치 노출 대상 아님)
     const me = this.players.get(this.myId);
     if (!me || this.caught || this.gameEnded) return;
     if (this.drawState !== 'closed' && this.drawState !== 'holding') return;
@@ -1567,11 +1733,9 @@ export class GameScene extends Phaser.Scene {
     } else {
       btns.push({ key: 'E', label: '위장', canvas: true, act: () => this._actCanvas() });
       btns.push({ key: 'Q', label: '그리기', act: () => this._actDraw() });
+      btns.push({ key: 'R', label: '휘파람', act: () => this._actWhistle() }); // 숨는이만
     }
-    btns.push(
-      { key: 'R', label: '휘파람', act: () => this._actWhistle() },
-      { key: 'SPACE', label: '점프', act: () => this._actJump() },
-    );
+    btns.push({ key: 'SPACE', label: '점프', act: () => this._actJump() });
     if (!seeker) {
       // 숨는이 전용: 모든 명찰/그림자 숨김 토글
       btns.push({ key: 'H', label: this._hideTags ? '명찰표시' : '명찰숨김', tags: true, act: () => this._toggleTags() });
@@ -1623,7 +1787,7 @@ export class GameScene extends Phaser.Scene {
       const who = this._esc(this._pendingKillName || '상대');
       reason = `<span style="color:#5fe08a">${who}</span> 처치 <span style="color:#ffd83b">+${delta}</span>`;
     } else {
-      const who = this._esc(this._nearestSeekerName() || '술래');
+      const who = this._esc(this._nearSeekersLabel());
       reason = `<span style="color:#ff6b6b">${who}</span>의 시야 안 <span style="color:#ffd83b">+${delta}</span>`;
     }
     const el = document.createElement('div');
@@ -1652,6 +1816,26 @@ export class GameScene extends Phaser.Scene {
       if (d < best) { best = d; id = pid; }
     });
     return id ? this._nameOf(id) : null;
+  }
+
+  // 점수 범위(500) 안 술래들: 가장 가까운 닉네임 + 여럿이면 "외 N인" (서버 SCORE_RANGE 와 동일)
+  _nearSeekersLabel() {
+    const me = this.players.get(this.myId);
+    if (!me) return '술래';
+    const RANGE2 = 500 * 500;
+    let best = Infinity, nearest = null, count = 0;
+    this.players.forEach((p) => {
+      if (p.role !== 'seeker' || p.caught) return;
+      const dx = (p.x || 0) - me.x, dy = (p.y || 0) - me.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < RANGE2) {
+        count++;
+        if (d2 < best) { best = d2; nearest = p; }
+      }
+    });
+    if (!nearest) return this._nearestSeekerName() || '술래';
+    const name = nearest.name || '술래';
+    return count > 1 ? `${name} 외 ${count - 1}인` : name;
   }
 
   // 점수 획득 효과음(가벼운 틱)
@@ -1983,6 +2167,10 @@ export class GameScene extends Phaser.Scene {
     this._applyLobby(me);
     // 강제 휘파람 카운트다운 표시
     this._applyWhistleTimer();
+    // 탐색/정답 공개 카운트다운 + 정답 공개 네비게이션
+    this._applyRoundTimer();
+    this._updateRevealNav();
+    this._applyGameOverCountdown(); // 종료 화면 로비 복귀 카운트
 
     // [2단계] 키 입력 (잡혀서 관전 중이면 게임 조작 잠금)
     const isSeeker = this.myRole === 'seeker';

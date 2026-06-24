@@ -177,10 +177,26 @@ html, body {
 }
 #wait-overlay.hidden { display: none; }
 
-/* 강제 휘파람까지 남은 시간(숨는이) — 추격 오버레이 아래 */
+/* 탐색 시간 / 정답 공개 카운트다운 — 추격 오버레이와 같은 자리 */
+#round-timer {
+  position: fixed;
+  top: 78px; left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  font-size: 15px; font-weight: bold;
+  color: #8fe0ff;
+  background: rgba(11,13,18,0.82);
+  border: 2px solid #0a0c14;
+  padding: 8px 16px;
+  white-space: nowrap;
+  text-align: center;
+}
+#round-timer.hidden { display: none; }
+
+/* 강제 휘파람까지 남은 시간(숨는이) — 탐색/추격 타이머 아래로 약간 간격 */
 #whistle-timer {
   position: fixed;
-  top: 116px; left: 50%;
+  top: 126px; left: 50%;
   transform: translateX(-50%);
   z-index: 40;
   font-size: 14px; font-weight: bold;
