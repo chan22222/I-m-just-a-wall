@@ -142,6 +142,7 @@ io.on('connection', (socket) => {
       },
       phase: room.phase || 'lobby',
       isHost: room.hostId === socket.id,
+      hostId: room.hostId,
       seekerRemainMs: room.seekerReleaseAt ? Math.max(0, room.seekerReleaseAt - Date.now()) : 0,
       whistleRemainMs: room.nextWhistleAt ? Math.max(0, room.nextWhistleAt - Date.now()) : 0,
       hiderRemainMs: room.hiderEndAt ? Math.max(0, room.hiderEndAt - Date.now()) : 0,
@@ -395,6 +396,11 @@ io.on('connection', (socket) => {
     leaveVoice();
     room.players.delete(socket.id);
     socket.to(currentRoomId).emit('playerLeft', { id: socket.id });
+    // 방장이 나가면 남은 사람 아무에게나 인계(안 그러면 시작·설정이 막혀 방이 먹통이 됨)
+    if (room.hostId === socket.id && room.players.size > 0) {
+      room.hostId = room.players.keys().next().value;
+      io.to(currentRoomId).emit('hostChanged', { hostId: room.hostId });
+    }
     broadcastScores(currentRoomId);
     console.log(`[leave] room=${currentRoomId} id=${socket.id} total=${room.players.size}`);
     if (room.players.size === 0) rooms.delete(currentRoomId);
