@@ -226,6 +226,10 @@ io.on('connection', (socket) => {
     if (!currentRoomId) return;
     const room = rooms.get(currentRoomId);
     if (!room || room.hostId !== socket.id || room.phase !== 'lobby') return;
+    if (room.players.size < 3) {
+      socket.emit('startError', { message: '게임 시작에는 최소 3명이 필요합니다.' });
+      return;
+    }
     room.phase = 'starting';
     room.startAt = Date.now() + 15000;
     io.to(currentRoomId).emit('gameStarting', { remainMs: 15000 });
@@ -450,6 +454,7 @@ function resetToLobby(roomId, room) {
   for (const p of room.players.values()) {
     p.role = 'hider';
     p.caught = false;
+    p.dataURL = null; // 판이 끝나면 위장 그림 초기화
     p.x = 3400 + (Math.random() - 0.5) * 760;
     p.y = 4416 + (Math.random() - 0.5) * 460;
   }

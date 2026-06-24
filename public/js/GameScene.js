@@ -394,25 +394,17 @@ export class GameScene extends Phaser.Scene {
     const cx = W / 2, cy = H / 2;
     // 화살표 위치: 화면끝(가장자리)과 술래(중앙)의 중간쯤 — 중앙에서 화면 절반의 절반 거리
     const reachX = cx * 0.5, reachY = cy * 0.5;
-    const screen = 24; // 실제 화면 안 판정
     const me = this.players.get(this.myId);
-    const NEAR2 = 300 * 300; // 본인이 이만큼 가까이 오면 그 타겟 마커가 사라짐
+    const NEAR2 = 400 * 400; // 본인이 이만큼 가까이 오면 그 타겟 마커가 사라짐
     this._revealTargets.forEach((t) => {
-      // 본인이 타겟 근처에 오면 마커 숨김(화면에 보이는지와 무관)
+      // 본인이 타겟 근처에 오면 마커 숨김
       if (me) {
         const ddx = t.x - me.x, ddy = t.y - me.y;
         if (ddx * ddx + ddy * ddy < NEAR2) { t.arrow.setVisible(false); t.label.setVisible(false); return; }
       }
+      // 근처 아니면 화면 안/밖 상관없이 항상 가장자리 화살표 + 닉네임(타겟 방향)
       const sx = (t.x - wv.x) / wv.width * W;
       const sy = (t.y - wv.y) / wv.height * H;
-      const onScreen = sx >= screen && sx <= W - screen && sy >= screen && sy <= H - screen;
-      if (onScreen) {
-        // 화면 안이지만 아직 근처 아님: 실제 위치에 닉네임만(화살표 없이)
-        t.arrow.setVisible(false);
-        t.label.setPosition(sx, sy - 30).setVisible(true);
-        return;
-      }
-      // 화면 밖: 가장자리 화살표 + 닉네임
       const dx = sx - cx, dy = sy - cy;
       const ang = Math.atan2(dy, dx);
       const sc = Math.min(reachX / Math.max(Math.abs(dx), 0.001), reachY / Math.max(Math.abs(dy), 0.001));
@@ -925,6 +917,18 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  // 게임 중 이탈: 마지막 위치에 문 이모지 + "닉네임 탈주"(회색) 마커를 남긴다(라운드 종료 시 정리)
+  _spawnQuitMarker(p) {
+    const emoji = this.add.text(p.x, p.y - 36, '🚪', { fontSize: '36px', padding: { x: 4, y: 8 } })
+      .setOrigin(0.5).setDepth(p.y + 0.4);
+    const label = this.add.text(p.x, p.y - 80, p.name + ' 탈주', {
+      fontFamily: 'monospace', fontSize: '14px', fontStyle: 'bold', color: '#9aa0ab',
+      backgroundColor: 'rgba(0,0,0,0.5)', padding: { x: 5, y: 2 },
+    }).setOrigin(0.5).setDepth(p.y + 0.5);
+    this._quitMarkers = this._quitMarkers || [];
+    this._quitMarkers.push(emoji, label);
+  }
+
   // 감염모드: 잡힌 숨는이의 스냅샷(위치/그림)으로 고정된 시체 엔티티를 만든다.
   // 원본 플레이어는 곧 술래로 부활하므로, 시체는 시체대로 그 자리에 전시된다.
   _spawnCorpse(src) {
@@ -973,6 +977,18 @@ export class GameScene extends Phaser.Scene {
     }).setOrigin(0.5).setScrollFactor(0).setDepth(99999);
   }
 
+  // 화면 중앙 상단에 잠깐 뜨는 안내(인원 부족 등)
+  _toast(msg) {
+    if (this._toastEl) this._toastEl.destroy();
+    const cam = this.cameras.main;
+    this._toastEl = this.add.text(cam.width / 2, cam.height * 0.76, msg, {
+      fontFamily: 'sans-serif', fontSize: '20px', fontStyle: 'bold',
+      color: '#ff6b6b', stroke: '#101218', strokeThickness: 6, align: 'center',
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(99999);
+    const el = this._toastEl;
+    this.time.delayedCall(2200, () => { if (el) el.destroy(); if (this._toastEl === el) this._toastEl = null; });
+  }
+
   // 승리 메시지(중앙). 정답 공개 시작(숨는이 승) 또는 게임 종료(술래 승) 시 한 번만 생성
   _showWinMessage(winner) {
     if (this._gameOverText) return;
@@ -1017,6 +1033,8 @@ export class GameScene extends Phaser.Scene {
         this.players.delete(id);
       }
     }
+    // 탈주 마커 정리
+    if (this._quitMarkers) { this._quitMarkers.forEach((m) => m.destroy()); this._quitMarkers = null; }
     // 모든 플레이어 역할/위치/잡힘 리셋(로비는 모두 숨는이)
     players.forEach((info) => {
       let p = this.players.get(info.id);
@@ -1028,10 +1046,12 @@ export class GameScene extends Phaser.Scene {
       p.revealed = false;
       if (p.body) p.body.clearTint().setAlpha(1); // 유령 흑백/반투명 복구
       if (p.skin) p.skin.setAlpha(1);
+      this.applyDrawing(info.id, null); // 판 끝나면 위장 그림 제거
       p.x = info.x; p.y = info.y;
       p.target.x = info.x; p.target.y = info.y;
       p.z = 0; p.zVel = 0;
     });
+    if (this.board) this.board.loadFromDataURL(null); // 본인 캔버스 초기화
     this.myRole = 'hider';
     this._resetCanvasState();
     this._updateRoleBadge();
@@ -1432,6 +1452,9 @@ export class GameScene extends Phaser.Scene {
       }
     });
 
+    // 시작 불가(인원 부족 등) 안내
+    socket.on('startError', ({ message } = {}) => this._toast(message || '게임을 시작할 수 없습니다.'));
+
     // 방장이 시작 누름 → 15초 카운트다운(아직 로비, 역할 미정)
     socket.on('gameStarting', ({ remainMs } = {}) => {
       this._phase = 'starting';
@@ -1536,6 +1559,10 @@ export class GameScene extends Phaser.Scene {
     socket.on('playerLeft', ({ id }) => {
       const p = this.players.get(id);
       if (!p) return;
+      // 게임 진행 중 이탈 → 마지막 위치에 탈주 표시(문 + 닉네임)
+      if ((this._phase === 'playing' || this._phase === 'reveal') && !p.isCorpse) {
+        this._spawnQuitMarker(p);
+      }
       p.body.destroy();
       p.skin.destroy();
       p.shadow.destroy();
@@ -2372,13 +2399,21 @@ export class GameScene extends Phaser.Scene {
         p.skin.setFlipX(false);
       }
 
-      // 위장(그림 표시) 중인 숨는이는 술래보다 항상 뒤로 눌러, 술래가 무빙만으로
-      // 들키는 것을 방지. 단, 캔버스를 집어넣고 일반 이동 중인 숨는이는 손대지 않아
-      // 정상 2.5D(Y정렬)로 술래와 앞뒤가 자연스럽게 결정된다(밟히는 것처럼 안 보임).
-      if (p.role === 'hider' && p.skin.visible && seekerY != null) {
-        const dep = Math.min(p.y, seekerY - 1);
-        p.body.setDepth(dep);
-        p.skin.setDepth(dep + 0.05);
+      // 위장(그림 표시) 중인 숨는이는 술래보다 뒤로 눌러, 술래가 무빙만으로 들키는 것을 방지.
+      // 단, 가로로 가까운(겹칠 수 있는) 술래에게만 적용 — 멀리 있는 술래의 y 때문에 깊이가
+      // 과하게 낮아져 사이의 오브젝트를 뚫고 뒤로 가는 버그를 막는다.
+      if (p.role === 'hider' && p.skin.visible) {
+        let ny = null, bestDx = Infinity;
+        this.players.forEach((s) => {
+          if (s.role !== 'seeker' || s.caught) return;
+          const dx = Math.abs(s.x - p.x);
+          if (dx < bestDx) { bestDx = dx; ny = s.y; }
+        });
+        if (ny != null && bestDx < 100) {
+          const dep = Math.min(p.y, ny - 1);
+          p.body.setDepth(dep);
+          p.skin.setDepth(dep + 0.05);
+        }
       }
 
       // 술래 총 오버레이: 몸/코스튬 위에 한 겹 더 (발사 중엔 gun_moving 위에 gun_shot 동시 표시)
