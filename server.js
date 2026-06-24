@@ -36,9 +36,43 @@ const rooms = new Map();
 
 function getRoom(roomId) {
   if (!rooms.has(roomId)) {
-    rooms.set(roomId, { players: new Map() });
+    rooms.set(roomId, { players: new Map(), isPublic: false, name: '' });
   }
   return rooms.get(roomId);
+}
+
+// 방 코드(5자리, 혼동되는 글자 제외)
+function genRoomCode() {
+  const ch = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let s = '';
+  for (let i = 0; i < 5; i++) s += ch[Math.floor(Math.random() * ch.length)];
+  return s;
+}
+
+// 숫자 옵션 범위 제한(잘못된 값이면 기본값)
+function clampNum(v, min, max, def) {
+  v = Number(v);
+  if (!Number.isFinite(v)) return def;
+  return Math.max(min, Math.min(max, Math.round(v)));
+}
+
+// 같은 이름의 (사람이 있는) 방이 이미 있는지
+function roomNameExists(name) {
+  for (const room of rooms.values()) {
+    if (room.players.size > 0 && room.name === name) return true;
+  }
+  return false;
+}
+
+// 전역 닉네임 점유(소켓별). 닉은 방 선택 전에 확정되며 전체에서 유일해야 함.
+const nicks = new Map(); // socketId -> nick
+const NICK_RE = /^[A-Za-z0-9가-힣]{1,16}$/; // 한글·영문·숫자만(공백·특수문자 불가)
+function nickTaken(nick, exceptId) {
+  const lower = nick.toLowerCase();
+  for (const [id, n] of nicks) {
+    if (id !== exceptId && n.toLowerCase() === lower) return true;
+  }
+  return false;
 }
 
 // 방에 술래(seeker)가 이미 있으면 hider, 없으면 seeker 로 역할 배정
@@ -51,47 +85,135 @@ function assignRole(room) {
 }
 
 // 월드 크기(클라이언트와 동일하게 유지). 스폰 위치 계산용.
-const WORLD = { width: 6688, height: 3764 }; // 군도 맵(타일 64px × 105×59)
+// 군도 맵(위, y 0~3764) + 전용 로비 방(아래, y 3900~) 을 한 월드에 둔다
+const WORLD = { width: 6688, height: 4928 }; // 타일 64px × 105×77
 
 io.on('connection', (socket) => {
   let currentRoomId = null;
 
-  socket.on('joinRoom', ({ roomId, name } = {}) => {
-    roomId = (roomId || 'lobby').toString().slice(0, 24);
+  // 공통 입장 처리: 역할 배정 + 플레이어 생성 + init 전송
+  function doJoin(roomId, nickname) {
     currentRoomId = roomId;
     socket.join(roomId);
-
     const room = getRoom(roomId);
     const role = assignRole(room);
-
     const me = {
       id: socket.id,
       role,
       color: Math.floor(Math.random() * 3), // 숨는이 색(gray/lemon/orange) 랜덤 인덱스
-      name: (name || `P-${socket.id.slice(0, 4)}`).toString().slice(0, 16),
-      // 리스폰존: 중앙 섬 장애물 없는 한 지점에 고정(겹침 방지용 미세 분산만)
-      x: 3400 + (Math.random() - 0.5) * 60,
-      y: 2640 + (Math.random() - 0.5) * 60,
+      name: (nickname || `P-${socket.id.slice(0, 4)}`).toString().slice(0, 16),
+      // 입장 시엔 로비 방에서 대기(시작하면 클라가 게임 맵으로 텔레포트)
+      x: 3400 + (Math.random() - 0.5) * 200,
+      y: 4450 + (Math.random() - 0.5) * 120,
       angle: 0,
       dataURL: null, // 아직 위장 그림 없음
       caught: false, // 술래에게 잡혔는지
       score: 0,      // 점수(술래=킬 500 / 숨는이=술래 근접 초당 10)
     };
     room.players.set(socket.id, me);
-
-    // 접속한 본인에게: 내 정보 + 방의 기존 플레이어 목록 전달
     socket.emit('init', {
       id: socket.id,
       role,
       world: WORLD,
       players: Array.from(room.players.values()),
+      roomId,
+      roomName: room.name,
+      isPublic: room.isPublic,
+      // 방 옵션 + 진행 단계/방장 여부 + 술래 대기 남은 시간(시계차 무관하게 ms)
+      options: {
+        maxPlayers: room.maxPlayers || 12,
+        seekerWait: room.seekerWait || 70,
+        hiderTime: room.hiderTime || 200,
+        revealTime: room.revealTime || 30,
+      },
+      phase: room.phase || 'lobby',
+      isHost: room.hostId === socket.id,
+      seekerRemainMs: room.seekerReleaseAt ? Math.max(0, room.seekerReleaseAt - Date.now()) : 0,
     });
-
-    // 같은 방 다른 사람에게: 새 플레이어 입장 알림
     socket.to(roomId).emit('playerJoined', me);
-    broadcastScores(roomId); // 점수판 초기 동기화
-
+    broadcastScores(roomId);
     console.log(`[join] room=${roomId} id=${socket.id} role=${role} total=${room.players.size}`);
+  }
+
+  // 닉네임 확정(전역 유일 + 형식 검증). 확정 후 바꿀 수 없음.
+  socket.on('setNick', ({ nick } = {}) => {
+    nick = String(nick || '').trim();
+    if (!NICK_RE.test(nick)) {
+      socket.emit('nickError', { message: '한글·영문·숫자만 가능해요 (공백·특수문자 불가).' });
+      return;
+    }
+    if (nickTaken(nick, socket.id)) {
+      socket.emit('nickError', { message: '이미 접속된 아이디입니다.' });
+      return;
+    }
+    nicks.set(socket.id, nick);
+    socket.emit('nickOk', { nick });
+  });
+
+  // 방 만들기(공개/비공개 + 옵션) → 코드 생성 후 자동 입장
+  socket.on('createRoom', ({ name, isPublic, nickname, maxPlayers, seekerWait, hiderTime, revealTime, seekerCount, mode } = {}) => {
+    name = String(name || '방').slice(0, 20).trim() || '방';
+    if (roomNameExists(name)) {
+      socket.emit('joinError', { message: '이미 있는 방 이름 입니다.' });
+      return;
+    }
+    let code;
+    do { code = genRoomCode(); } while (rooms.has(code));
+    const room = getRoom(code);
+    room.isPublic = !!isPublic;
+    room.name = name;
+    room.hostId = socket.id;   // 방장(시작 권한)
+    room.phase = 'lobby';      // lobby → playing
+    room.maxPlayers = clampNum(maxPlayers, 2, 30, 12);
+    room.seekerWait = clampNum(seekerWait, 5, 200, 70);
+    room.hiderTime = clampNum(hiderTime, 30, 600, 200);
+    room.revealTime = clampNum(revealTime, 5, 100, 30);
+    room.seekerCount = clampNum(seekerCount, 1, 3, 2);
+    room.mode = mode === 'infection' ? 'infection' : 'basic';
+    socket.emit('roomCreated', { roomId: code, isPublic: room.isPublic });
+    doJoin(code, nickname);
+  });
+
+  // 방 참가(코드/공개목록 ID) — 존재하고 인원이 있고 가득 차지 않은 방만
+  socket.on('joinRoom', ({ roomId, nickname } = {}) => {
+    roomId = String(roomId || '').trim().toUpperCase().slice(0, 12);
+    const room = rooms.get(roomId);
+    if (!roomId || !room || room.players.size === 0) {
+      socket.emit('joinError', { message: '방을 찾을 수 없습니다.' });
+      return;
+    }
+    if (room.players.size >= (room.maxPlayers || 12)) {
+      socket.emit('joinError', { message: '방이 가득 찼습니다.' });
+      return;
+    }
+    doJoin(roomId, nickname);
+  });
+
+  // 게임(라운드) 시작 — 방장만. 술래 대기 시작 시각 설정 후 방 전체에 알림
+  socket.on('startGame', () => {
+    if (!currentRoomId) return;
+    const room = rooms.get(currentRoomId);
+    if (!room || room.hostId !== socket.id || room.phase === 'playing') return;
+    room.phase = 'playing';
+    room.seekerReleaseAt = Date.now() + (room.seekerWait || 70) * 1000;
+    io.to(currentRoomId).emit('gameStarted', {
+      seekerRemainMs: Math.max(0, room.seekerReleaseAt - Date.now()),
+    });
+  });
+
+  // 공개 방 목록
+  socket.on('listRooms', () => {
+    const list = [];
+    for (const [id, room] of rooms) {
+      if (room.isPublic && room.players.size > 0) {
+        list.push({
+          id, name: room.name || id, count: room.players.size,
+          max: room.maxPlayers || 12, mode: room.mode || 'basic',
+          seekers: room.seekerCount || 2, phase: room.phase || 'lobby',
+        });
+      }
+    }
+    socket.emit('roomList', list);
   });
 
   // -------------------------------------------------------------------------
@@ -108,7 +230,8 @@ io.on('connection', (socket) => {
     p.angle = angle;
     p.holding = !!holding; // 늦게 입장하는 사람도 받도록 저장
     // 높이축(z) / 애니메이션 / 좌우반전 / 캔버스 들고있음 도 그대로 중계
-    socket.to(currentRoomId).emit('playerMoved', { id: socket.id, x, y, angle, z, anim, flip, holding });
+    // volatile: 최신 위치만 중요 → 네트워크가 밀리면 버퍼에 쌓지 않고 드롭(폭주 방지)
+    socket.to(currentRoomId).volatile.emit('playerMoved', { id: socket.id, x, y, angle, z, anim, flip, holding });
   });
 
   // -------------------------------------------------------------------------
@@ -209,6 +332,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
+    nicks.delete(socket.id); // 닉네임 점유 해제
     if (!currentRoomId) return;
     const room = rooms.get(currentRoomId);
     if (!room) return;
@@ -233,16 +357,21 @@ function broadcastScores(roomId) {
 
 // 근접 점수: 술래가 SCORE_RANGE 안에 있는 숨는이는 초당 +10점(위험 보상)
 const SCORE_RANGE = 500;
+const SCORE_RANGE_SQ = SCORE_RANGE * SCORE_RANGE; // sqrt 없이 제곱 거리로 비교
 const SCORE_PER_SEC = 10;
 setInterval(() => {
   for (const [roomId, room] of rooms) {
+    if (room.players.size === 0 || room.phase !== 'playing') continue; // 로비 중엔 점수 없음
     const players = [...room.players.values()];
     const seekers = players.filter((p) => p.role === 'seeker' && !p.caught);
     const hiders = players.filter((p) => p.role === 'hider' && !p.caught);
     if (!seekers.length || !hiders.length) continue;
     let changed = false;
     for (const h of hiders) {
-      const near = seekers.some((s) => Math.hypot((s.x || 0) - (h.x || 0), (s.y || 0) - (h.y || 0)) < SCORE_RANGE);
+      const near = seekers.some((s) => {
+        const dx = (s.x || 0) - (h.x || 0), dy = (s.y || 0) - (h.y || 0);
+        return dx * dx + dy * dy < SCORE_RANGE_SQ;
+      });
       if (near) { h.score = (h.score || 0) + SCORE_PER_SEC; changed = true; }
     }
     if (changed) broadcastScores(roomId);

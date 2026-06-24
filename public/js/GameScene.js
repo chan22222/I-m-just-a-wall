@@ -104,7 +104,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   create() {
-    this.world = { width: 6688, height: 3764 }; // 군도 맵(타일 64px × 105×59)
+    this.world = { width: 6688, height: 4928 }; // 군도(위) + 로비 방(아래), 타일 64px × 105×77
     this.players = new Map();
     this.props = [];
     this.myId = null;
@@ -170,6 +170,8 @@ export class GameScene extends Phaser.Scene {
     this.reloadGfx = this.add.graphics().setDepth(DEPTH_EMOJI - 2).setVisible(false);
     // 잡힌 사람의 남은 그림 테두리(위치 표시) — 매 프레임 다시 그림
     this.deadGfx = this.add.graphics().setDepth(DEPTH_FOG - 1);
+    this._seekerReleaseAt = 0;
+    this._phase = 'lobby';
     // 커스텀 마우스 커서(DOM): 캔버스/UI/셰이더 위에 항상 표시 + 마우스를 따라다님
     this._setupCursor();
 
@@ -275,6 +277,35 @@ export class GameScene extends Phaser.Scene {
       g.fillStyle(0x43b061, 1); g.fillCircle(19, 21, 8);
       g.generateTexture('propPlant', 40, 56); g.destroy();
     }
+  }
+
+  // 술래 추격 대기: 시작 후 대기 시간 동안 로비에 머물다, 끝나면 게임 맵으로 텔레포트
+  _applyLobby(me) {
+    const wo = document.getElementById('wait-overlay');
+    const waiting = me && this.myRole === 'seeker' && this._seekerReleaseAt && Date.now() < this._seekerReleaseAt;
+    if (waiting) {
+      if (wo) {
+        const sec = Math.max(0, Math.ceil((this._seekerReleaseAt - Date.now()) / 1000));
+        wo.textContent = `🔒 추격 시작까지 ${sec}초`;
+        wo.classList.remove('hidden');
+      }
+    } else {
+      if (wo && !wo.classList.contains('hidden')) wo.classList.add('hidden');
+      // 대기 끝났는데 아직 로비(아래 영역)면 게임 맵으로 이동(1회)
+      if (me && this.myRole === 'seeker' && this._phase === 'playing' && this._seekerReleaseAt && me.y > 3900) {
+        this._teleportToGame();
+        this._seekerReleaseAt = 0;
+      }
+    }
+  }
+
+  // 게임 맵(군도 중앙 리스폰존)으로 이동
+  _teleportToGame() {
+    const me = this.players.get(this.myId);
+    if (!me) return;
+    me.x = 3400 + (Math.random() - 0.5) * 200;
+    me.y = 2640 + (Math.random() - 0.5) * 120;
+    me._kbx = 0; me._kby = 0;
   }
 
   // 이동 충돌: 발밑(x,y)이 물(섬 밖)이거나 나무/덤불 밑동에 닿으면 true
@@ -598,6 +629,8 @@ export class GameScene extends Phaser.Scene {
   _shoot() {
     const me = this.players.get(this.myId);
     if (!me) return;
+    if (this._phase !== 'playing') return;                                   // 로비 중엔 발사 불가
+    if (this._seekerReleaseAt && Date.now() < this._seekerReleaseAt) return; // 대기 중엔 발사 불가
     const now = this.time.now;
     if (now < this._gunCdUntil) return;
 
@@ -884,15 +917,167 @@ export class GameScene extends Phaser.Scene {
   // ===========================================================================
   // [3단계] 네트워크
   // ===========================================================================
+  // 타이틀/로비 화면: 방 만들기·참가(공개/비공개) 버튼 처리
+  _setupTitle() {
+    const screen = document.getElementById('title-screen');
+    if (!screen) return;
+    const show = (name) => this._showTitleStep(name);
+    const nick = () => this._nick || '';
+    // 저장된 닉네임이 있으면 입력창에 미리 채움(자동 확정 실패 대비)
+    try {
+      const saved = localStorage.getItem('imjustawall_nick');
+      const nickInput = document.getElementById('ts-nick');
+      if (saved && nickInput) nickInput.value = saved;
+    } catch (e) { /* 무시 */ }
+
+    screen.addEventListener('click', async (e) => {
+      const btn = e.target.closest('[data-act]');
+      if (!btn) return;
+      this._titleMsg('');
+      switch (btn.dataset.act) {
+        case 'set-nick': {
+          const v = (document.getElementById('ts-nick').value || '').trim();
+          if (!v) { this._titleMsg('닉네임을 입력하세요.'); break; }
+          if (!/^[A-Za-z0-9가-힣]{1,16}$/.test(v)) {
+            this._titleMsg('한글·영문·숫자만 가능해요 (공백·특수문자 불가).'); break;
+          }
+          const ok = await this._confirm(`'${v}'(으)로 결정하시겠어요?\n닉네임은 나중에 바꿀 수 없습니다.`);
+          if (!ok) break;
+          this.socket.emit('setNick', { nick: v }); // 서버가 중복 확인 후 nickOk/nickError 응답
+          break;
+        }
+        case 'create-menu': show('create'); break;
+        case 'join-menu': show('join'); break;
+        case 'back': show('main'); break;
+        case 'back-join': show('join'); break;
+        case 'create': {
+          const name = (document.getElementById('ts-roomname').value || '').trim();
+          const num = (id) => Number(document.getElementById(id).value);
+          this.socket.emit('createRoom', {
+            name, isPublic: btn.dataset.public === '1', nickname: nick(),
+            maxPlayers: num('ts-max'), seekerCount: num('ts-seekers'), seekerWait: num('ts-swait'),
+            hiderTime: num('ts-htime'), revealTime: num('ts-reveal'),
+            mode: document.getElementById('ts-mode').value,
+          });
+          break;
+        }
+        case 'join-public': show('public-list'); this.socket.emit('listRooms'); break;
+        case 'join-private': show('private-code'); break;
+        case 'refresh': this.socket.emit('listRooms'); break;
+        case 'join-code': {
+          const code = (document.getElementById('ts-code').value || '').trim();
+          if (!code) { this._titleMsg('코드를 입력하세요.'); break; }
+          this.socket.emit('joinRoom', { roomId: code, nickname: nick() });
+          break;
+        }
+        default: break;
+      }
+    });
+
+    const listEl = document.getElementById('ts-roomlist');
+    if (listEl) listEl.addEventListener('click', (e) => {
+      const row = e.target.closest('.ts-room');
+      if (!row || !row.dataset.id) return;
+      this.socket.emit('joinRoom', { roomId: row.dataset.id, nickname: nick() });
+    });
+
+    const startBtn = document.getElementById('start-btn');
+    if (startBtn) startBtn.addEventListener('click', () => { this.socket.emit('startGame'); startBtn.blur(); });
+  }
+
+  // 방장+로비 단계에서만 시작 버튼 표시
+  _updateStartButton() {
+    const btn = document.getElementById('start-btn');
+    if (btn) btn.classList.toggle('hidden', !(this._phase === 'lobby' && this._isHost));
+  }
+
+  _renderRoomList(list) {
+    const el = document.getElementById('ts-roomlist');
+    if (!el) return;
+    if (!Array.isArray(list) || !list.length) {
+      el.innerHTML = '<div class="ts-room-empty">열려 있는 공개 방이 없습니다.</div>';
+      return;
+    }
+    el.innerHTML = list.map((r) => {
+      const mode = r.mode === 'infection' ? '감염' : '기본';
+      const phase = r.phase === 'playing' ? '진행중' : '대기중';
+      return `<div class="ts-room" data-id="${this._esc(r.id)}">` +
+        `<div class="ts-room-main"><span class="ts-room-name">${this._esc(r.name)}</span>` +
+        `<span class="ts-room-count">${r.count}/${r.max || 12}명</span></div>` +
+        `<div class="ts-room-info">${mode} · 술래 ${r.seekers || 2}명 · ${phase}</div></div>`;
+    }).join('');
+  }
+
+  _titleMsg(msg) {
+    const el = document.getElementById('ts-msg');
+    if (el) el.textContent = msg || '';
+  }
+
+  _showTitleStep(name) {
+    const screen = document.getElementById('title-screen');
+    if (screen) screen.querySelectorAll('.ts-step').forEach((s) => s.classList.toggle('hidden', s.dataset.step !== name));
+  }
+
+  // 게임 UI 스타일 확인 모달 → Promise<boolean>
+  _confirm(message) {
+    return new Promise((resolve) => {
+      const modal = document.getElementById('confirm-modal');
+      if (!modal) { resolve(true); return; }
+      modal.querySelector('.cm-msg').textContent = message;
+      modal.classList.remove('hidden');
+      const onClick = (e) => {
+        const b = e.target.closest('[data-cm]');
+        if (!b) return;
+        modal.classList.add('hidden');
+        modal.removeEventListener('click', onClick);
+        resolve(b.dataset.cm === 'ok');
+      };
+      modal.addEventListener('click', onClick);
+    });
+  }
+
+  _hideTitle() {
+    const s = document.getElementById('title-screen');
+    if (s) s.classList.add('hidden');
+  }
+
+  _showRoomCode(roomId, isPublic) {
+    const el = document.getElementById('room-code');
+    if (!el || !roomId) return;
+    el.innerHTML = `${isPublic ? '🌐 공개' : '🔒 비공개'} · 코드 <b>${this._esc(roomId)}</b>`;
+    el.classList.remove('hidden');
+  }
+
   _setupNetwork() {
     const socket = io();
     this.socket = socket;
-    const params = new URLSearchParams(location.search);
-    const roomId = params.get('room') || 'lobby';
+    // 접속하자마자 입장하지 않고, 타이틀에서 방을 만들거나 참가한다.
+    this._setupTitle();
 
-    socket.on('connect', () => socket.emit('joinRoom', { roomId }));
+    // 닉네임 확정 결과
+    socket.on('nickOk', ({ nick } = {}) => {
+      this._nick = nick;
+      try { localStorage.setItem('imjustawall_nick', nick); } catch (e) { /* 무시 */ }
+      this._showTitleStep('main');
+    });
+    socket.on('nickError', ({ message } = {}) => {
+      this._showTitleStep('nickname');
+      this._titleMsg(message || '닉네임을 사용할 수 없어요.');
+    });
 
-    socket.on('init', ({ id, role, world, players }) => {
+    // 연결되면: 저장된 닉이 있으면 자동 확정(→ 메인), 없으면 닉네임 입력 화면으로
+    socket.on('connect', () => {
+      let saved = null;
+      try { saved = localStorage.getItem('imjustawall_nick'); } catch (e) { /* 무시 */ }
+      if (saved) socket.emit('setNick', { nick: saved });
+      else this._showTitleStep('nickname');
+    });
+
+    socket.on('roomList', (list) => this._renderRoomList(list));
+    socket.on('roomCreated', ({ roomId } = {}) => { this._myRoomCode = roomId; });
+    socket.on('joinError', ({ message } = {}) => this._titleMsg(message || '입장에 실패했습니다.'));
+
+    socket.on('init', ({ id, role, world, players, roomId, isPublic, phase, isHost, seekerRemainMs }) => {
       this.myId = id;
       this.myRole = role;
       if (world) this.world = world;
@@ -901,6 +1086,26 @@ export class GameScene extends Phaser.Scene {
       this._buildHud();
       // 마우스 포인터: 술래=크로스헤어(중앙 정렬), 숨는이=cursor(좌상단 화살표 끝 기준)
       this._applyCursorRole(role);
+      this._hideTitle();
+      this._showRoomCode(roomId, isPublic);
+      this._phase = phase || 'lobby';
+      this._isHost = !!isHost;
+      // 게임 중 입장 시 술래라면 남은 대기 반영. 로비면 0(시작 전엔 대기 없음)
+      this._seekerReleaseAt = (this._phase === 'playing' && role === 'seeker' && seekerRemainMs > 0)
+        ? Date.now() + seekerRemainMs : 0;
+      this._updateStartButton();
+      // 게임 중 입장(늦참): 게임 맵으로. 술래는 남은 대기가 있으면 대기 후 update 가 보냄.
+      if (this._phase === 'playing') {
+        if (role === 'hider' || (role === 'seeker' && !this._seekerReleaseAt)) this._teleportToGame();
+      }
+    });
+
+    // 방장이 시작 → HIDER 즉시 게임 맵으로, SEEKER 는 대기 후 이동
+    socket.on('gameStarted', ({ seekerRemainMs } = {}) => {
+      this._phase = 'playing';
+      this._updateStartButton();
+      if (this.myRole === 'hider') this._teleportToGame();
+      else if (this.myRole === 'seeker') this._seekerReleaseAt = Date.now() + (seekerRemainMs || 0);
     });
 
     socket.on('playerJoined', (p) => this._addPlayer(p));
@@ -1522,9 +1727,14 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
+    // 술래 로비 대기(추격 시작 전까지 가둠)
+    this._applyLobby(me);
+
     // [2단계] 키 입력 (잡혀서 관전 중이면 게임 조작 잠금)
     const isSeeker = this.myRole === 'seeker';
-    const locked = this.caught || this.gameEnded;
+    // 타이틀/입력창(닉네임·방이름·채팅)에 포커스 중이거나 게임 입장 전이면 게임 키 무시
+    const typing = !!(document.activeElement && /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName));
+    const locked = this.caught || this.gameEnded || !this.myId || typing;
     //  E = 캔버스 꺼내기/집어넣기 (숨는이 전용 — 술래는 위장 안 함)
     if (!locked && !isSeeker && Phaser.Input.Keyboard.JustDown(this.keys.e)) this._actCanvas();
     //  Q = 그리기 (술래: 꾸미기 / 숨는이: 위장)
@@ -1535,12 +1745,12 @@ export class GameScene extends Phaser.Scene {
     if (!locked && !this.chatOpen && !isSeeker &&
         Phaser.Input.Keyboard.JustDown(this.keys.h)) this._toggleTags();
     //  T = 채팅 입력창 열기 (그리는 중이 아닐 때)
-    if (Phaser.Input.Keyboard.JustDown(this.keys.t) &&
+    if (Phaser.Input.Keyboard.JustDown(this.keys.t) && !typing && this.myId &&
         (this.drawState === 'closed' || this.drawState === 'holding')) {
       this._openChat();
     }
     //  V = 마이크 ON/OFF · B = 음성채팅 참여 ON/OFF · − / = 볼륨
-    if (this.voice) {
+    if (this.voice && !typing && this.myId) {
       if (Phaser.Input.Keyboard.JustDown(this.keys.v)) this.voice.toggleMic();
       if (Phaser.Input.Keyboard.JustDown(this.keys.b)) this.voice.toggle();
       if (Phaser.Input.Keyboard.JustDown(this.keys.volUp)) this.voice.adjustVolume(0.1);

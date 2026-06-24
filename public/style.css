@@ -19,6 +19,165 @@ html, body {
 }
 #game-root canvas { display: block; }
 
+/* ---- 타이틀/로비 화면 ---- */
+#title-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at 50% 38%, #1a2030, #0b0d12 75%);
+}
+#title-screen.hidden { display: none; }
+.ts-card {
+  width: min(92vw, 380px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 28px 22px;
+  background: #232a3d;
+  border: 3px solid #0a0c14;
+  box-shadow: inset 2px 2px 0 0 rgba(255,255,255,0.12), inset -2px -2px 0 0 rgba(0,0,0,0.5), 6px 6px 0 rgba(0,0,0,0.45);
+}
+.ts-logo {
+  margin: 0 0 8px;
+  font-size: 22px;
+  font-weight: bold;
+  text-align: center;
+  color: #ffd83b;
+  letter-spacing: 1px;
+  text-shadow: 2px 2px 0 #0a0c14;
+}
+.ts-input {
+  height: 42px;
+  padding: 0 12px;
+  font-size: 14px;
+  font-family: inherit;
+  color: #e7e9ee;
+  background: #161b28;
+  border: 2px solid #0a0c14;
+  border-radius: 0;
+  outline: none;
+}
+.ts-input:focus { border-color: #2f6df0; }
+.ts-step { display: flex; flex-direction: column; gap: 8px; }
+.ts-step.hidden { display: none; }
+.ts-btn {
+  height: 44px;
+  font-size: 14px;
+  font-weight: bold;
+  font-family: inherit;
+  color: #e7e9ee;
+  background: #2e3650;
+  border: 2px solid #0a0c14;
+  border-radius: 0;
+  cursor: pointer;
+  transition: background 0.1s, transform 0.05s;
+  box-shadow: inset 1px 1px 0 rgba(255,255,255,0.1), inset -1px -1px 0 rgba(0,0,0,0.45);
+}
+.ts-btn:hover { background: #36405e; }
+.ts-btn:active { transform: translateY(1px); }
+.ts-btn.primary { background: #2f6df0; }
+.ts-btn.primary:hover { background: #4078f5; }
+.ts-btn.ghost { background: transparent; border-color: transparent; box-shadow: none; color: #aeb6c6; height: 36px; }
+.ts-btn.ghost:hover { color: #fff; background: rgba(255,255,255,0.05); }
+.ts-roomlist {
+  display: flex; flex-direction: column; gap: 5px;
+  max-height: 240px; overflow-y: auto; min-height: 60px;
+}
+.ts-room {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 9px 12px;
+  background: #2e3650; border: 2px solid #0a0c14; cursor: pointer;
+  font-size: 13px; color: #e7e9ee;
+}
+.ts-room:hover { background: #36405e; }
+.ts-room-main { display: flex; align-items: center; justify-content: space-between; }
+.ts-room-name { font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ts-room .ts-room-count { color: #5fe08a; font-weight: bold; flex: 0 0 auto; margin-left: 8px; }
+.ts-room-info { font-size: 11px; color: #9aa3b5; }
+.ts-room-empty { text-align: center; color: #8b93a6; padding: 20px; font-size: 13px; }
+.ts-msg { min-height: 18px; text-align: center; font-size: 12px; color: #ff8a8a; }
+.ts-note { margin: 4px 0 0; text-align: center; font-size: 11px; color: #8b93a6; }
+.ts-loading { margin: 0; text-align: center; font-size: 14px; color: #aeb6c6; padding: 18px 0; }
+
+/* 공통 확인 모달 */
+#confirm-modal {
+  position: fixed; inset: 0; z-index: 2000;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.6);
+}
+#confirm-modal.hidden { display: none; }
+.cm-box {
+  width: min(90vw, 340px);
+  display: flex; flex-direction: column; gap: 16px;
+  padding: 24px 22px;
+  background: #232a3d; border: 3px solid #0a0c14;
+  box-shadow: inset 2px 2px 0 0 rgba(255,255,255,0.12), inset -2px -2px 0 0 rgba(0,0,0,0.5), 6px 6px 0 rgba(0,0,0,0.45);
+}
+.cm-msg { margin: 0; font-size: 14px; color: #e7e9ee; text-align: center; line-height: 1.5; white-space: pre-line; }
+.cm-btns { display: flex; gap: 8px; }
+.cm-btns .ts-btn { flex: 1; }
+.ts-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.ts-opt { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: #aeb6c6; }
+.ts-opt input, .ts-opt select {
+  height: 34px; padding: 0 8px;
+  font-size: 13px; font-family: inherit;
+  color: #e7e9ee; background: #161b28;
+  border: 2px solid #0a0c14; border-radius: 0; outline: none;
+}
+.ts-opt input:focus, .ts-opt select:focus { border-color: #2f6df0; }
+
+/* 술래 대기(추격 시작 카운트다운) 오버레이 */
+#wait-overlay {
+  position: fixed;
+  top: 78px; left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  font-size: 15px; font-weight: bold;
+  color: #ffd83b;
+  background: rgba(11,13,18,0.82);
+  border: 2px solid #0a0c14;
+  padding: 8px 16px;
+  white-space: nowrap;
+  text-align: center;
+}
+#wait-overlay.hidden { display: none; }
+
+/* 방장 게임 시작 버튼 */
+#start-btn {
+  position: fixed;
+  bottom: 26px; left: 50%;
+  transform: translateX(-50%);
+  z-index: 50;
+  padding: 14px 38px;
+  font-size: 16px; font-weight: bold; font-family: inherit;
+  color: #fff; background: #2f6df0;
+  border: 3px solid #0a0c14; border-radius: 0;
+  cursor: pointer;
+  box-shadow: inset 1px 1px 0 rgba(255,255,255,0.2), 4px 4px 0 rgba(0,0,0,0.4);
+}
+#start-btn:hover { background: #4078f5; }
+#start-btn:active { transform: translateX(-50%) translateY(2px); }
+#start-btn.hidden { display: none; }
+
+/* 게임 중 방 코드 표시(상단 중앙) */
+#room-code {
+  position: fixed;
+  top: 10px; left: 50%;
+  transform: translateX(-50%);
+  z-index: 25;
+  font-size: 12px; font-weight: bold;
+  color: #aeb6c6;
+  background: rgba(11,13,18,0.7);
+  border: 2px solid #0a0c14;
+  padding: 5px 12px;
+  white-space: nowrap;
+}
+#room-code.hidden { display: none; }
+#room-code b { color: #ffd83b; letter-spacing: 1px; }
+
 /* ---- 커스텀 마우스 커서 (DOM: 캔버스/UI/셰이더 위에 항상) ---- */
 /* 원본 시트 60×15(15×15 4프레임)을 4배 확대 → 시트 240×60, 한 프레임 60×60 */
 #game-cursor {

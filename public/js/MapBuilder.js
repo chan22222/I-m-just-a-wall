@@ -84,6 +84,13 @@ export class MapBuilder {
       toWater.forEach(([x, y]) => { land[y][x] = false; });
       toLand.forEach(([x, y]) => { land[y][x] = true; });
     }
+    // 전용 로비 방(군도 아래 별도 영역) — cleanup 뒤에 추가해 깔끔한 사각 유지
+    const LB = { x: 53, y: 69, hw: 9, hh: 6 };
+    for (let ty = LB.y - LB.hh; ty <= LB.y + LB.hh; ty++) {
+      for (let tx = LB.x - LB.hw; tx <= LB.x + LB.hw; tx++) {
+        if (ty >= 0 && ty < ROWS && tx >= 0 && tx < COLS) land[ty][tx] = true;
+      }
+    }
     this.landMask = land;
 
     // 타일맵 레이어
@@ -110,7 +117,7 @@ export class MapBuilder {
     const inner = [];
     for (let ty = 0; ty < ROWS; ty++) {
       for (let tx = 0; tx < COLS; tx++) {
-        if (!land[ty][tx]) continue;
+        if (!land[ty][tx] || ty >= 60) continue; // 로비 영역(아래)은 장식 제외 — 깔끔한 대기실
         let ok = true;
         for (let dy = -1; dy <= 1 && ok; dy++) for (let dx = -1; dx <= 1; dx++) if (!at(tx + dx, ty + dy)) { ok = false; break; }
         if (ok) inner.push({ tx, ty });
