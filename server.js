@@ -220,6 +220,16 @@ io.on('connection', (socket) => {
     room.revealTime = clampNum(opts.revealTime, 5, 100, room.revealTime || 30);
     room.whistleTime = clampNum(opts.whistleTime, 10, 100, room.whistleTime || 30);
     room.mode = opts.mode === 'infection' ? 'infection' : 'basic';
+    // 변경된(검증된) 옵션을 방 전체에 브로드캐스트 — 다른 플레이어도 최신 설정을 보도록
+    io.to(currentRoomId).emit('roomOptions', {
+      maxPlayers: room.maxPlayers,
+      seekerCount: room.seekerCount,
+      seekerWait: room.seekerWait,
+      hiderTime: room.hiderTime,
+      revealTime: room.revealTime,
+      whistleTime: room.whistleTime,
+      mode: room.mode,
+    });
   });
 
   // 게임 시작 — 방장만. 바로 시작하지 않고 15초 카운트다운 후 라운드 개시

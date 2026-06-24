@@ -1559,6 +1559,13 @@ export class GameScene extends Phaser.Scene {
 
     socket.on('playerJoined', (p) => this._addPlayer(p));
 
+    // 방장이 방 설정을 바꾸면 방 전체가 최신 옵션을 반영(코드 패널 표시 갱신)
+    socket.on('roomOptions', (options = {}) => {
+      this._options = { ...this._options, ...options };
+      this._mode = options.mode || this._mode || 'basic';
+      if (this._roomId) this._showRoomCode(this._roomId, this._roomPublic, this._options);
+    });
+
     // 방장이 나가 다른 사람에게 인계됨 → 왕관 이동 + 내가 방장이면 로비 컨트롤 표시
     socket.on('hostChanged', ({ hostId } = {}) => {
       this._hostId = hostId || null;
