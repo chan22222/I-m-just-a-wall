@@ -12,6 +12,7 @@
 import { DrawingBoard } from './DrawingBoard.js';
 import { VoiceChat } from './VoiceChat.js';
 import { ChromaticAberrationPostFX } from './PostFX.js';
+import { MapBuilder } from './MapBuilder.js';
 
 const SPEED = 240;        // 이동 속도(px/s)
 const SEEKER_SPEED = 360; // 술래 이동 속도(1.5배)
@@ -79,8 +80,13 @@ export class GameScene extends Phaser.Scene {
     this.load.image('gun_idle', S + 'gun_idle.png');
     this.load.image('gun_moving', S + 'gun_moving.png');
     this.load.image('gun_shot', S + '7_Cat_gun_shot.png');
-    // 맵 배경 이미지
-    this.load.image('map01', 'map/map01.png');
+    // SproutLands 타일맵 에셋(맵 대개편)
+    const SL = 'map/SproutLands/';
+    this.load.image('ts_grass', SL + 'Tilesets/Grass.png');
+    this.load.image('ts_water', SL + 'Tilesets/Water.png');
+    this.load.image('ts_dirt',  SL + 'Tilesets/Tilled_Dirt_v2.png');
+    this.load.image('obj_biom', SL + 'Objects/Basic_Grass_Biom_things.png');
+    this.load.spritesheet('ts_fence', SL + 'Tilesets/Fences.png', { frameWidth: 16, frameHeight: 16 });
     // 커스텀 마우스 커서(크로스헤어/cursor)는 DOM(#game-cursor)으로 렌더 → Phaser 텍스처 불필요
     // 숨는이: HIDER/<색> 3종(gray/lemon/orange), 구조 동일
     HIDER_SETS.forEach((c) => {
@@ -121,8 +127,9 @@ export class GameScene extends Phaser.Scene {
 
     this._makeAnims();
     this._makePropTextures(); // 이펙트 파티클(fx-dot) 등 텍스처 생성
-    this._drawBackground();
-    // 맵 이미지를 쓰므로 절차적 장식(기둥/상자/화분)은 생성하지 않음
+    // SproutLands 타일맵으로 맵 생성 + 충돌 박스 수집(나무/물/덤불/울타리)
+    this.map = new MapBuilder(this);
+    this.obstacles = this.map.build(this.world);
 
     this.cameras.main.setBounds(0, 0, this.world.width, this.world.height);
     this.cameraTarget = this.add.zone(this.world.width / 2, this.world.height / 2, 1, 1);
@@ -267,29 +274,16 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  _drawBackground() {
-    // 맵 이미지(map01)를 월드 전체에 배치. NEAREST(최근접/픽셀) 필터로 또렷하게 확대.
-    const tex = this.textures.get('map01');
-    if (tex) tex.setFilter(Phaser.Textures.FilterMode.NEAREST);
-    this.add.image(0, 0, 'map01')
-      .setOrigin(0, 0)
-      .setDisplaySize(this.world.width, this.world.height)
-      .setDepth(DEPTH_BG);
-  }
-
-  _spawnProps() {
-    const layout = [
-      { tex: 'propPillar', x: 420, y: 360 }, { tex: 'propPillar', x: 1180, y: 360 },
-      { tex: 'propPillar', x: 420, y: 880 }, { tex: 'propPillar', x: 1180, y: 880 },
-      { tex: 'propCrate', x: 700, y: 500 }, { tex: 'propCrate', x: 760, y: 520 },
-      { tex: 'propCrate', x: 980, y: 760 },
-      { tex: 'propPlant', x: 560, y: 640 }, { tex: 'propPlant', x: 1040, y: 460 },
-      { tex: 'propPlant', x: 820, y: 940 },
-    ];
-    layout.forEach((o) => {
-      this.add.ellipse(o.x, o.y, 40, 14, 0x000000, 0.28).setDepth(DEPTH_SHADOW);
-      this.props.push(this.add.image(o.x, o.y, o.tex).setOrigin(0.5, 1).setDepth(o.y));
-    });
+  // 이동 충돌: 발밑(x,y)이 장애물(나무 밑동/물/덤불/울타리) 사각형에 닿으면 true
+  _hitObstacle(x, y) {
+    const r = 11; // 플레이어 발밑 반경
+    const list = this.obstacles;
+    if (!list) return false;
+    for (let i = 0; i < list.length; i++) {
+      const o = list[i];
+      if (x > o.x - r && x < o.x + o.w + r && y > o.y - r && y < o.y + o.h + r) return true;
+    }
+    return false;
   }
 
   // ===========================================================================
@@ -1362,8 +1356,11 @@ export class GameScene extends Phaser.Scene {
         // 캐릭터는 발(아래)이 기준이고 스프라이트가 위로 솟으므로, 머리가 맵 위 경계를
         // 넘지 않도록 상단 클램프를 스프라이트 높이만큼 내려준다.
         const topLimit = CAT_DH * me.scale * 0.85;
-        me.x = Phaser.Math.Clamp(me.x + (vx / len) * speed * dt, 30, this.world.width - 30);
-        me.y = Phaser.Math.Clamp(me.y + (vy / len) * speed * dt, topLimit, this.world.height - 10);
+        // 축 분리 이동 + 장애물 충돌(막히면 그 축만 정지 → 벽 따라 미끄러짐)
+        const nx = Phaser.Math.Clamp(me.x + (vx / len) * speed * dt, 30, this.world.width - 30);
+        const ny = Phaser.Math.Clamp(me.y + (vy / len) * speed * dt, topLimit, this.world.height - 10);
+        if (!this._hitObstacle(nx, me.y)) me.x = nx;
+        if (!this._hitObstacle(me.x, ny)) me.y = ny;
         if (vx < 0) me.facingLeft = true;
         else if (vx > 0) me.facingLeft = false;
       }
@@ -1371,8 +1368,10 @@ export class GameScene extends Phaser.Scene {
       // 발사 반동(넉백): 쏠 때 _shoot 가 me._kbx/_kby 를 설정 → 뒤로 살짝 밀리며 감쇠
       if (me._kbx || me._kby) {
         const topLimit = CAT_DH * me.scale * 0.85;
-        me.x = Phaser.Math.Clamp(me.x + me._kbx * dt, 30, this.world.width - 30);
-        me.y = Phaser.Math.Clamp(me.y + me._kby * dt, topLimit, this.world.height - 10);
+        const nx = Phaser.Math.Clamp(me.x + me._kbx * dt, 30, this.world.width - 30);
+        const ny = Phaser.Math.Clamp(me.y + me._kby * dt, topLimit, this.world.height - 10);
+        if (!this._hitObstacle(nx, me.y)) me.x = nx;
+        if (!this._hitObstacle(me.x, ny)) me.y = ny;
         me._kbx *= 0.8; me._kby *= 0.8;
         if (Math.abs(me._kbx) < 6 && Math.abs(me._kby) < 6) { me._kbx = 0; me._kby = 0; }
       }
