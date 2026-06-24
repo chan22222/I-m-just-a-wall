@@ -221,34 +221,14 @@ io.on('connection', (socket) => {
     room.mode = opts.mode === 'infection' ? 'infection' : 'basic';
   });
 
-  // 게임(라운드) 시작 — 방장만. 술래 대기 시작 시각 설정 후 방 전체에 알림
+  // 게임 시작 — 방장만. 바로 시작하지 않고 15초 카운트다운 후 라운드 개시
   socket.on('startGame', () => {
     if (!currentRoomId) return;
     const room = rooms.get(currentRoomId);
-    if (!room || room.hostId !== socket.id || room.phase === 'playing') return;
-    room.phase = 'playing';
-    room.seekerReleaseAt = Date.now() + (room.seekerWait || 70) * 1000;
-    room.nextWhistleAt = Date.now() + (room.whistleTime || 30) * 1000; // 강제 휘파람 첫 발동
-    // 탐색 종료(추격 시작 + 탐색 시간) → 살아남은 숨는이 승리 후 정답 공개 단계
-    room.hiderEndAt = room.seekerReleaseAt + (room.hiderTime || 200) * 1000;
-    room.revealEndAt = 0;
-    // 술래 선정: 지원 구역(로비 가운데) 안 플레이어 우선 → 정원 초과 시 추첨, 미달 시 나머지에서 추첨
-    const SZ = { x: 3400, y: 4416, r2: 150 * 150 };
-    const players = [...room.players.values()];
-    const inZone = (p) => { const dx = (p.x || 0) - SZ.x, dy = (p.y || 0) - SZ.y; return dx * dx + dy * dy < SZ.r2; };
-    const volunteers = shuffle(players.filter(inZone));
-    const others = shuffle(players.filter((p) => !inZone(p)));
-    const sc = Math.min(room.seekerCount || 2, players.length);
-    let seekers = volunteers.slice(0, sc);
-    if (seekers.length < sc) seekers = seekers.concat(others.slice(0, sc - seekers.length));
-    const seekerIds = new Set(seekers.map((p) => p.id));
-    players.forEach((p) => { p.role = seekerIds.has(p.id) ? 'seeker' : 'hider'; p.caught = false; });
-    const remain = Math.max(0, room.seekerReleaseAt - Date.now());
-    for (const p of players) {
-      io.to(p.id).emit('gameStarted', { seekerRemainMs: remain, role: p.role, mode: room.mode || 'basic' });
-    }
-    io.to(currentRoomId).emit('rolesUpdated', players.map((p) => ({ id: p.id, role: p.role })));
-    broadcastScores(currentRoomId);
+    if (!room || room.hostId !== socket.id || room.phase !== 'lobby') return;
+    room.phase = 'starting';
+    room.startAt = Date.now() + 15000;
+    io.to(currentRoomId).emit('gameStarting', { remainMs: 15000 });
   });
 
   // 공개 방 목록
@@ -353,6 +333,8 @@ io.on('connection', (socket) => {
       io.to(currentRoomId).emit('rolesUpdated', [{ id: targetId, role: 'seeker' }]);
       io.to(targetId).emit('infected');
     } else {
+      // 휘파람/기본: 잡힌 자리에 시체를 남기고(감염처럼), 본인은 유령(흑백 반투명·이동 가능)
+      io.to(currentRoomId).emit('corpseSpawn', { id: targetId });
       target.caught = true;
       io.to(currentRoomId).emit('playerCaught', { id: targetId });
     }
@@ -425,6 +407,32 @@ function broadcastScores(roomId) {
   io.to(roomId).emit('scores', scores);
 }
 
+// 라운드 개시: 술래 선정 + 단계 시각 설정 후 방 전체에 알림(카운트다운 종료 시 호출)
+function beginRound(roomId, room) {
+  room.phase = 'playing';
+  room.seekerReleaseAt = Date.now() + (room.seekerWait || 70) * 1000;
+  room.nextWhistleAt = Date.now() + (room.whistleTime || 30) * 1000; // 강제 휘파람 첫 발동
+  room.hiderEndAt = room.seekerReleaseAt + (room.hiderTime || 200) * 1000;
+  room.revealEndAt = 0;
+  // 술래 선정: 지원 구역(로비 가운데) 안 플레이어 우선 → 정원 초과 시 추첨, 미달 시 나머지에서 추첨
+  const SZ = { x: 3400, y: 4416, r2: 150 * 150 };
+  const players = [...room.players.values()];
+  const inZone = (p) => { const dx = (p.x || 0) - SZ.x, dy = (p.y || 0) - SZ.y; return dx * dx + dy * dy < SZ.r2; };
+  const volunteers = shuffle(players.filter(inZone));
+  const others = shuffle(players.filter((p) => !inZone(p)));
+  const sc = Math.min(room.seekerCount || 2, players.length);
+  let seekers = volunteers.slice(0, sc);
+  if (seekers.length < sc) seekers = seekers.concat(others.slice(0, sc - seekers.length));
+  const seekerIds = new Set(seekers.map((p) => p.id));
+  players.forEach((p) => { p.role = seekerIds.has(p.id) ? 'seeker' : 'hider'; p.caught = false; });
+  const remain = Math.max(0, room.seekerReleaseAt - Date.now());
+  for (const p of players) {
+    io.to(p.id).emit('gameStarted', { seekerRemainMs: remain, role: p.role, mode: room.mode || 'basic' });
+  }
+  io.to(roomId).emit('rolesUpdated', players.map((p) => ({ id: p.id, role: p.role })));
+  broadcastScores(roomId);
+}
+
 // 라운드 종료: 승패 알림 + 로비 복귀 예약(술래 승은 10초 안내, 숨는이 승은 즉시)
 function endRound(roomId, room, winner) {
   if (room.phase === 'ended') return;
@@ -462,6 +470,10 @@ setInterval(() => {
   for (const [roomId, room] of rooms) {
     if (room.players.size === 0) continue;
     // --- 라운드 단계 전환 ---
+    if (room.phase === 'starting' && room.startAt && now >= room.startAt) {
+      beginRound(roomId, room); // 시작 카운트다운 종료 → 라운드 개시
+      continue;
+    }
     if (room.phase === 'playing' && room.hiderEndAt && now >= room.hiderEndAt) {
       // 탐색 시간 종료: 살아남은 숨는이가 있으면 숨는이 승 + 정답 공개 단계
       const alive = [...room.players.values()].filter((p) => p.role === 'hider' && !p.caught);

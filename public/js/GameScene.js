@@ -329,7 +329,10 @@ export class GameScene extends Phaser.Scene {
     const el = document.getElementById('round-timer');
     if (!el) return;
     let text = null;
-    if (this._phase === 'reveal' && this._revealEndAt) {
+    if (this._phase === 'starting' && this._startCountAt) {
+      const s = Math.max(0, Math.ceil((this._startCountAt - Date.now()) / 1000));
+      text = `게임 시작까지 ${s}초`;
+    } else if (this._phase === 'reveal' && this._revealEndAt) {
       const s = Math.max(0, Math.ceil((this._revealEndAt - Date.now()) / 1000));
       text = `📣 정답 공개 ${s}초`;
     } else if (this._phase === 'playing' && this._hiderEndAt && !this.gameEnded) {
@@ -344,13 +347,15 @@ export class GameScene extends Phaser.Scene {
     else if (!el.classList.contains('hidden')) el.classList.add('hidden');
   }
 
-  // 정답 공개: 살아남은 숨는이를 시체처럼 노출하고, 위치 네비게이션 마커 생성
+  // 정답 공개: 살아남은 숨는이를 유령(흑백 반투명)으로 노출하고, 위치 네비게이션 마커 생성
   _startReveal(hiders) {
     hiders.forEach((h) => {
       const p = this.players.get(h.id);
-      if (p) p.caught = true; // 시체처럼 표시(위장 그림이 있으면 그림도 함께 노출)
+      // 유령으로 공개(revealed=true 면 산 술래에게도 보임)
+      if (p) { p.caught = true; p.ghost = true; p.revealed = true; }
       if (h.id === this.myId) {
         this.caught = true;
+        this.ghost = true; // 정답 공개 유령도 이동 가능
         this._resetCanvasState();
         const badge = document.getElementById('role-badge');
         if (badge) {
@@ -882,11 +887,13 @@ export class GameScene extends Phaser.Scene {
   _onCaught(id) {
     const p = this.players.get(id);
     if (!p) return;
-    p.caught = true; // 렌더 루프에서 시체 + 그림 표시
+    p.caught = true;
+    p.ghost = true; // 유령(흑백 반투명·이동 가능). 시체는 corpseSpawn 이 별도로 전시
     this._killEffect(p.x, p.y - 61 * p.scale); // 처치 폭발(EFFECT 시트)
     this._pulseChroma(0.08); // 처치 순간 색수차 펄스
     if (id === this.myId) {
       this.caught = true;
+      this.ghost = true;
       // 그리기 중이었으면 정리(줌/도구막대 닫기)
       this.board.hide();
       this.drawGfx.setVisible(false).clear();
@@ -895,7 +902,7 @@ export class GameScene extends Phaser.Scene {
       this.drawState = 'closed';
       const badge = document.getElementById('role-badge');
       if (badge) {
-        badge.textContent = '💀 잡힘 — 관전 중';
+        badge.textContent = '👻 유령 — 관전 이동 가능';
         badge.removeAttribute('data-tip');
         badge.className = '';
       }
@@ -985,6 +992,7 @@ export class GameScene extends Phaser.Scene {
     this._phase = 'lobby';
     this.gameEnded = false;
     this.caught = false;
+    this.ghost = false;
     this._seekerReleaseAt = 0; this._nextWhistleAt = 0; this._hiderEndAt = 0; this._revealEndAt = 0;
     // 감염 시체 등 클라 전용 잔여 엔티티 제거(다음 판에 남지 않도록)
     for (const [id, p] of [...this.players]) {
@@ -1000,6 +1008,10 @@ export class GameScene extends Phaser.Scene {
       if (p.role !== info.role) { this._changeRole(info.id, info.role); p = this.players.get(info.id); }
       if (!p) return;
       p.caught = false;
+      p.ghost = false;
+      p.revealed = false;
+      if (p.body) p.body.clearTint().setAlpha(1); // 유령 흑백/반투명 복구
+      if (p.skin) p.skin.setAlpha(1);
       p.x = info.x; p.y = info.y;
       p.target.x = info.x; p.target.y = info.y;
       p.z = 0; p.zVel = 0;
@@ -1222,7 +1234,7 @@ export class GameScene extends Phaser.Scene {
   // 모드별 간단한 설명 텍스트
   _modeDescText(v) {
     return v === 'infection'
-      ? '잡힌 숨는이도 술래가 되어 함께 추격합니다.'
+      ? '잡힌 HIDER도 SEEKER가 되어 함께 추격합니다.'
       : '일정 시간마다 HIDER가 휘파람을 불어 위치가 드러납니다.';
   }
 
@@ -1402,6 +1414,13 @@ export class GameScene extends Phaser.Scene {
       if (this._phase === 'playing') {
         if (role === 'hider' || (role === 'seeker' && !this._seekerReleaseAt)) this._teleportToGame();
       }
+    });
+
+    // 방장이 시작 누름 → 15초 카운트다운(아직 로비, 역할 미정)
+    socket.on('gameStarting', ({ remainMs } = {}) => {
+      this._phase = 'starting';
+      this._startCountAt = Date.now() + (remainMs || 0);
+      this._updateStartButton(); // 카운트 중엔 시작 버튼 숨김
     });
 
     // 방장이 시작 → 역할 배정 후 HIDER 즉시 게임 맵으로, SEEKER 는 대기 후 이동
@@ -2103,7 +2122,7 @@ export class GameScene extends Phaser.Scene {
     // [1단계] 이동 + 점프
     //   closed  : 평소 속도, 점프 가능
     //   holding : 캔버스 든 채 아주 느리게 이동(점프 불가, 캔버스 포즈 유지)
-    if (me && !this.chatOpen && !this.caught && (this.drawState === 'closed' || this.drawState === 'holding')) {
+    if (me && !this.chatOpen && (!this.caught || this.ghost) && (this.drawState === 'closed' || this.drawState === 'holding')) {
       const holding = this.drawState === 'holding';
       let baseSpeed = this.myRole === 'seeker' ? SEEKER_SPEED : SPEED;
       if (time < this._slowUntil) baseSpeed *= SLOW_FACTOR; // 빗맞힘 후 둔화(술래)
@@ -2247,7 +2266,7 @@ export class GameScene extends Phaser.Scene {
     this.players.forEach((pp) => { if (pp.role === 'seeker' && !pp.caught) seekerY = pp.y; });
 
     this.players.forEach((p, id) => {
-      if (p.caught) { // 잡힘(관전 아웃): 그림은 죽은 자리 그대로 전시 + 시체는 그 아래로(살짝 겹침)
+      if (p.caught && !p.ghost) { // 잡힘(관전 아웃): 그림은 죽은 자리 그대로 전시 + 시체는 그 아래로(살짝 겹침)
         const sc = p.scale;
         if (p.gun) p.gun.setVisible(false); // (술래는 안 잡히지만) 방어적으로 총 숨김
         if (p.gunShot) p.gunShot.setVisible(false);
@@ -2400,6 +2419,15 @@ export class GameScene extends Phaser.Scene {
         : !this._hideTags;
       p.shadow.setVisible(tagShow);
       p.label.setVisible(tagShow);
+
+      // 유령(휘파람/기본 사망): 흑백+반투명. 죽은 사람끼리만 보임 / 정답 공개(revealed)면 모두에게 보임. 명찰·그림자 없음
+      if (p.ghost) {
+        const ghostShown = (id === this.myId) || this.caught || p.revealed;
+        p.body.setTint(0x5a5a5a).setAlpha(ghostShown ? 0.4 : 0);
+        if (p.skin) p.skin.setAlpha(ghostShown ? 0.4 : 0);
+        p.shadow.setVisible(false);
+        p.label.setVisible(false);
+      }
     });
 
     if (me) this.cameraTarget.setPosition(me.x, me.y - VIS_OFFY * me.scale);
