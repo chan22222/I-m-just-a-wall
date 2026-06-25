@@ -200,7 +200,7 @@ io.on('connection', (socket) => {
     room.seekerWait = clampNum(seekerWait, 5, 200, 70);
     room.hiderTime = clampNum(hiderTime, 30, 600, 200);
     room.revealTime = clampNum(revealTime, 5, 100, 30);
-    room.whistleTime = clampNum(whistleTime, 10, 100, 30);
+    room.whistleTime = clampNum(whistleTime, 3, 50, 10);
     room.seekerCount = clampNum(seekerCount, 1, 3, 1);
     room.mode = mode === 'infection' ? 'infection' : 'basic';
     socket.emit('roomCreated', { roomId: code, isPublic: room.isPublic });
@@ -232,7 +232,7 @@ io.on('connection', (socket) => {
     room.seekerWait = clampNum(opts.seekerWait, 5, 200, room.seekerWait || 70);
     room.hiderTime = clampNum(opts.hiderTime, 30, 600, room.hiderTime || 200);
     room.revealTime = clampNum(opts.revealTime, 5, 100, room.revealTime || 30);
-    room.whistleTime = clampNum(opts.whistleTime, 10, 100, room.whistleTime || 30);
+    room.whistleTime = clampNum(opts.whistleTime, 3, 50, room.whistleTime || 10);
     room.mode = opts.mode === 'infection' ? 'infection' : 'basic';
     // 변경된(검증된) 옵션을 방 전체에 브로드캐스트 — 다른 플레이어도 최신 설정을 보도록
     io.to(currentRoomId).emit('roomOptions', {
@@ -315,19 +315,11 @@ io.on('connection', (socket) => {
   // -------------------------------------------------------------------------
   // [5단계] 휘파람: 위치를 같이 보내서, 받는 쪽에서 반경 판정을 한다.
   // -------------------------------------------------------------------------
-  socket.on('whistle', ({ x, y, forced } = {}) => {
+  socket.on('whistle', ({ x, y } = {}) => {
     if (!currentRoomId) return;
     // 본인 포함 방 전체에 broadcast (본인도 이펙트를 보도록)
+    // 강제 휘파람 타이머는 각 클라이언트가 개인적으로 관리(직접 불면 본인 카운트만 리셋)
     io.to(currentRoomId).emit('playerWhistled', { id: socket.id, x, y });
-    // 직접 분 휘파람(R)이면 강제 휘파람 타이머를 설정 시간으로 리셋(방 전체 동기화)
-    if (!forced) {
-      const room = rooms.get(currentRoomId);
-      if (room && room.mode !== 'infection' && room.phase === 'playing') {
-        const ms = (room.whistleTime || 30) * 1000;
-        room.nextWhistleAt = Date.now() + ms;
-        io.to(currentRoomId).emit('whistleReset', { remainMs: ms });
-      }
-    }
   });
 
   // -------------------------------------------------------------------------
@@ -342,6 +334,19 @@ io.on('connection', (socket) => {
     const msg = String(text || '').trim().slice(0, 120);
     if (!msg) return;
     io.to(currentRoomId).emit('chatMessage', { id: socket.id, name: p.name, text: msg });
+  });
+
+  // 강퇴: 방장만. 대상에게 알린 뒤 잠시 후 연결 종료(→ disconnect 핸들러가 방 정리·호스트 인계)
+  socket.on('kickPlayer', ({ id } = {}) => {
+    if (!currentRoomId) return;
+    const room = rooms.get(currentRoomId);
+    if (!room || room.hostId !== socket.id) return; // 방장만 강퇴 가능
+    if (!id || id === socket.id) return;             // 자기 자신은 강퇴 불가
+    if (!room.players.has(id)) return;               // 같은 방의 플레이어만
+    const target = io.sockets.sockets.get(id);
+    if (!target) return;
+    io.to(id).emit('kicked'); // 대상에게 강퇴 안내(클라가 타이틀로 복귀)
+    setTimeout(() => { const t = io.sockets.sockets.get(id); if (t) t.disconnect(true); }, 200);
   });
 
   // -------------------------------------------------------------------------
@@ -542,12 +547,7 @@ setInterval(() => {
       endRound(roomId, room, 'hider', 6000); // 결과를 보여줄 시간을 주고 로비로 복귀
       continue;
     }
-    // 강제 휘파람("휘파람을 참을 수 없어"): 주기마다 살아있는 숨는이를 강제로 불게 해 위치 노출
-    if (room.mode !== 'infection') {
-      const interval = (room.whistleTime || 30) * 1000;
-      if (!room.nextWhistleAt) room.nextWhistleAt = now + interval;
-      else if (now >= room.nextWhistleAt) { room.nextWhistleAt = now + interval; io.to(roomId).emit('forceWhistle'); }
-    }
+    // 강제 휘파람("휘파람을 참을 수 없어")은 각 클라이언트가 개인 타이머로 처리(서버 공용 X)
     const players = [...room.players.values()];
     const seekers = players.filter((p) => p.role === 'seeker' && !p.caught);
     const hiders = players.filter((p) => p.role === 'hider' && !p.caught);

@@ -45,7 +45,7 @@
             <label class="ts-opt">술래 대기(초)<input id="ts-swait" type="number" value="70" min="5" max="200" /></label>
             <label class="ts-opt">탐색 시간(초)<input id="ts-htime" type="number" value="200" min="30" max="600" /></label>
             <label class="ts-opt">정답 공개(초)<input id="ts-reveal" type="number" value="30" min="5" max="100" /></label>
-            <label class="ts-opt">강제 휘파람(초)<input id="ts-whistle" type="number" value="30" min="10" max="100" /></label>
+            <label class="ts-opt">강제 휘파람(초)<input id="ts-whistle" type="number" value="10" min="3" max="50" /></label>
             <label class="ts-opt ts-opt-wide">모드<select id="ts-mode"><option value="basic">기본 - 휘파람을 참을 수 없어</option><option value="infection">감염 - 아까까진 동료였는데</option></select></label>
             <p class="ts-opt-desc" id="ts-mode-desc"></p>
           </div>
@@ -116,7 +116,7 @@
           <label class="ts-opt">술래 대기(초)<input id="rs-swait" type="number" min="5" max="200" /></label>
           <label class="ts-opt">탐색 시간(초)<input id="rs-htime" type="number" min="30" max="600" /></label>
           <label class="ts-opt">정답 공개(초)<input id="rs-reveal" type="number" min="5" max="100" /></label>
-          <label class="ts-opt">강제 휘파람(초)<input id="rs-whistle" type="number" min="10" max="100" /></label>
+          <label class="ts-opt">강제 휘파람(초)<input id="rs-whistle" type="number" min="3" max="50" /></label>
           <label class="ts-opt ts-opt-wide">모드<select id="rs-mode"><option value="basic">기본 - 휘파람을 참을 수 없어</option><option value="infection">감염 - 아까까진 동료였는데</option></select></label>
           <p class="ts-opt-desc" id="rs-mode-desc"></p>
         </div>
@@ -131,6 +131,34 @@
       <div class="cm-btns">
         <button class="ts-btn ghost" type="button" data-sm="cancel">취소</button>
         <button class="ts-btn primary" type="button" data-sm="save">저장</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ESC 메뉴(설정/일시정지) — 타이틀 UI 스타일. 누구나 사운드·방 나가기, 방장은 플레이어 강퇴 -->
+  <div id="pause-modal" class="hidden">
+    <div class="sm-box pm-box">
+      <p class="sm-title">⏸ 메뉴</p>
+
+      <div class="pm-section">
+        <p class="pm-sec-title">사운드</p>
+        <label class="pm-vol">🎵 음악
+          <input id="pm-bgm" type="range" min="0" max="100" value="100" />
+        </label>
+        <label class="pm-vol">🔊 효과음
+          <input id="pm-sfx" type="range" min="0" max="100" value="100" />
+        </label>
+      </div>
+
+      <!-- 방장 전용: 플레이어 목록 + 강퇴 -->
+      <div id="pm-players" class="pm-section hidden">
+        <p class="pm-sec-title">플레이어</p>
+        <div id="pm-playerlist" class="pm-playerlist"></div>
+      </div>
+
+      <div class="cm-btns pm-actions">
+        <button class="ts-btn" type="button" data-pm="resume">계속하기</button>
+        <button class="ts-btn danger" type="button" data-pm="leave">방 나가기</button>
       </div>
     </div>
   </div>

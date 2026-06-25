@@ -115,6 +115,10 @@ export class GameScene extends Phaser.Scene {
     this.facingAngle = 0;
     this.lastSent = 0;
     this.audioCtx = null;
+    this._menuOpen = false; // ESC 메뉴(설정/일시정지) 열림 여부 — 열려 있으면 게임 조작 잠금
+    // 사운드 볼륨(0~1) — localStorage 에 저장. BGM(음악) / SFX(효과음) 각각. 기본값 100%(꽉 참)
+    this._bgmVol = this._loadVol('imjustawall_bgmvol2', 1.0); // 키 새로 부여 → 예전 40% 저장값 무시하고 기본 꽉 참
+    this._sfxVol = this._loadVol('imjustawall_sfxvol', 1.0);
     // 캔버스 상태:
     //   'closed'  : 평소(이동 가능, 캔버스 안 듦)
     //   'opening' : 캔버스 꺼내는 애니(이동 불가, 전환)
@@ -157,8 +161,13 @@ export class GameScene extends Phaser.Scene {
     const unlockAudio = () => this._ensureAudio();
     this.input.once('pointerdown', unlockAudio);
     this.input.keyboard.once('keydown', unlockAudio);
+    // BGM(HTML5 Audio)도 첫 사용자 제스처(타이틀 버튼 클릭 등 DOM 포함)에서 재생 시작
+    const unlockBgm = () => { this._ensureAudio(); this._updateBgm(); };
+    window.addEventListener('pointerdown', unlockBgm, { once: true });
+    window.addEventListener('keydown', unlockBgm, { once: true });
 
     this._setupChat();
+    this._setupPauseMenu(); // ESC 설정/일시정지 메뉴
 
     // 우클릭(지우개) 시 브라우저 메뉴 방지
     this.input.mouse.disableContextMenu();
@@ -190,6 +199,7 @@ export class GameScene extends Phaser.Scene {
     this._eyedropMode = false;  // 스포이드 버튼 모드
     this.input.on('pointerdown', (ptr) => {
       if (this.chatOpen) { this.chatInput.blur(); return; } // 게임(캔버스) 클릭 시 채팅 해제
+      if (this._menuOpen) return;                            // ESC 메뉴 열려 있으면 조작 무시
       if (!this.board.isOpen()) {
         // 그리는 중이 아닐 때
         if (ptr.leftButtonDown() && !this.caught && !this.gameEnded && this.drawState === 'closed') {
@@ -908,7 +918,7 @@ export class GameScene extends Phaser.Scene {
     gg.gain.setValueAtTime(0.0001, t);
     gg.gain.exponentialRampToValueAtTime(peak, t + 0.01);
     gg.gain.exponentialRampToValueAtTime(0.0001, t + 0.14);
-    o.connect(gg); gg.connect(ctx.destination);
+    o.connect(gg); gg.connect(this._sfxGain || ctx.destination);
     o.start(t); o.stop(t + 0.16);
   }
 
@@ -1084,6 +1094,8 @@ export class GameScene extends Phaser.Scene {
     this._buildHud();
     this._applyCursorRole('hider');
     this._updateStartButton();
+    this._updateBgm(); // 로비 음악으로 전환
+    if (this._menuOpen) this._refreshPauseList();
     const me = this.players.get(this.myId);
     this.cameras.main.zoomTo(1, 0);
     if (me) this.cameras.main.centerOn(me.x, me.y);
@@ -1487,14 +1499,15 @@ export class GameScene extends Phaser.Scene {
       // 게임 중 입장 시 남은 추격 대기 반영(술래·숨는이 모두 카운트다운 표시). 로비면 0
       this._seekerReleaseAt = (this._phase === 'playing' && seekerRemainMs > 0)
         ? Date.now() + seekerRemainMs : 0;
-      // 강제 휘파람 카운트다운(게임 중 입장 시 남은 시간 반영)
-      this._nextWhistleAt = (this._phase === 'playing' && this._mode !== 'infection' && whistleRemainMs > 0)
-        ? Date.now() + whistleRemainMs : 0;
+      // 강제 휘파람은 개인 타이머 → 게임 중 입장 시엔 본인 카운트를 새로 시작
+      this._nextWhistleAt = (this._phase === 'playing' && this._mode !== 'infection')
+        ? Date.now() + this._whistleInterval() : 0;
       // 탐색/정답 공개 카운트다운(게임 중 입장 시 남은 시간 반영)
       this._hiderEndAt = (this._phase === 'playing' && hiderRemainMs > 0) ? Date.now() + hiderRemainMs : 0;
       this._revealEndAt = (this._phase === 'reveal' && revealRemainMs > 0) ? Date.now() + revealRemainMs : 0;
       this._updateStartButton();
       this._refreshHostTags(); // 대기실 방장 명찰 옆 'host' 표기
+      this._updateBgm();       // 입장 단계에 맞는 배경음악
       // 게임 중 입장(늦참): 게임 맵으로. 술래는 남은 대기가 있으면 대기 후 update 가 보냄.
       if (this._phase === 'playing') {
         if (role === 'hider' || (role === 'seeker' && !this._seekerReleaseAt)) this._teleportToGame();
@@ -1518,6 +1531,7 @@ export class GameScene extends Phaser.Scene {
       if (role) this._changeRole(this.myId, role); // 스프라이트 교체 + myRole 갱신
       this._updateStartButton();
       this._refreshHostTags(); // 게임 시작 → 대기실 'host' 표기 제거
+      this._updateBgm();       // 게임 음악으로 전환
       // 모두 카운트다운 공유: 숨는이는 표시용(즉시 게임 맵), 술래는 대기 후 이동
       this._seekerReleaseAt = Date.now() + (seekerRemainMs || 0);
       // 강제 휘파람 카운트다운 시작(감염모드는 없음)
@@ -1542,16 +1556,6 @@ export class GameScene extends Phaser.Scene {
       if (src) this._spawnCorpse(src);
     });
 
-    // "휘파람을 참을 수 없어": 서버 주기 신호 → 내가 숨는이면 강제로 휘파람(위치 노출)
-    socket.on('forceWhistle', () => {
-      this._nextWhistleAt = Date.now() + this._whistleInterval(); // 강제 발동됨 → 다음 카운트다운 시작
-      if (this.myRole === 'hider' && !this.caught) this._actWhistle(true);
-    });
-
-    // 누군가 직접 휘파람을 불어 강제 타이머가 리셋됨(방 전체 동기화)
-    socket.on('whistleReset', ({ remainMs } = {}) => {
-      this._nextWhistleAt = Date.now() + (remainMs || this._whistleInterval());
-    });
 
     // 탐색 시간 종료 → 정답 공개: 살아남은 숨는이를 시체처럼 노출 + 위치 네비게이션
     socket.on('revealStart', ({ remainMs, hiders } = {}) => {
@@ -1560,7 +1564,13 @@ export class GameScene extends Phaser.Scene {
       this._startReveal(hiders || []);
     });
 
-    socket.on('playerJoined', (p) => this._addPlayer(p));
+    socket.on('playerJoined', (p) => { this._addPlayer(p); if (this._menuOpen) this._refreshPauseList(); });
+
+    // 강퇴됨: 안내 후 타이틀로 복귀
+    socket.on('kicked', () => {
+      try { window.alert('방장에 의해 방에서 추방되었습니다.'); } catch (e) { /* 무시 */ }
+      window.location.reload();
+    });
 
     // 방장이 방 설정을 바꾸면 방 전체가 최신 옵션을 반영(코드 패널 표시 갱신)
     socket.on('roomOptions', (options = {}) => {
@@ -1575,6 +1585,7 @@ export class GameScene extends Phaser.Scene {
       this._isHost = (hostId === this.myId);
       this._refreshHostTags();
       this._updateStartButton();
+      if (this._menuOpen) this._refreshPauseList(); // 방장 권한 변동 → 강퇴 UI 갱신
       if (this._isHost) this._toast('방장이 나가 당신이 방장이 되었습니다.');
     });
 
@@ -1641,6 +1652,7 @@ export class GameScene extends Phaser.Scene {
       if (p.gun) p.gun.destroy();
       if (p.gunShot) p.gunShot.destroy();
       this.players.delete(id);
+      if (this._menuOpen) this._refreshPauseList();
     });
   }
 
@@ -1980,7 +1992,7 @@ export class GameScene extends Phaser.Scene {
     if (!ctx) return;
     const o = ctx.createOscillator(), g = ctx.createGain();
     o.type = 'sine';
-    o.connect(g); g.connect(ctx.destination);
+    o.connect(g); g.connect(this._sfxGain || ctx.destination);
     const now = ctx.currentTime;
     o.frequency.setValueAtTime(1400, now);
     o.frequency.exponentialRampToValueAtTime(1900, now + 0.05);
@@ -2010,6 +2022,121 @@ export class GameScene extends Phaser.Scene {
 
   _esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  }
+
+  // ===== 사운드 볼륨(localStorage 저장) =====
+  _loadVol(key, def) {
+    try { const v = parseFloat(localStorage.getItem(key)); return Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : def; }
+    catch (e) { return def; }
+  }
+  _saveVol(key, v) { try { localStorage.setItem(key, String(v)); } catch (e) { /* 무시 */ } }
+
+  // ===== BGM(배경음악): 로비/타이틀 = home-at-night, 게임 중 = new-game =====
+  _bgmEl(key) {
+    if (!this._bgm) this._bgm = {};
+    if (!this._bgm[key]) {
+      const src = key === 'game' ? 'sfx/bgm/new-game.mp3' : 'sfx/bgm/home-at-night.mp3';
+      const a = new Audio(src);
+      a.loop = true;
+      a.volume = this._bgmVol;
+      this._bgm[key] = a;
+    }
+    return this._bgm[key];
+  }
+  // 현재 단계에 맞는 트랙 재생 + 나머지 정지(자동재생 정책상 play() 거부는 무시)
+  _updateBgm() {
+    const key = (this._phase === 'playing' || this._phase === 'reveal') ? 'game' : 'lobby';
+    const cur = this._bgmEl(key);
+    cur.volume = this._bgmVol;
+    if (this._bgmVol > 0 && cur.paused) { const p = cur.play(); if (p && p.catch) p.catch(() => {}); }
+    if (this._bgm) Object.keys(this._bgm).forEach((k) => { if (k !== key) this._bgm[k].pause(); });
+  }
+  _setBgmVol(v) {
+    this._bgmVol = Math.max(0, Math.min(1, v));
+    this._saveVol('imjustawall_bgmvol2', this._bgmVol);
+    if (this._bgm) Object.values(this._bgm).forEach((a) => { a.volume = this._bgmVol; });
+    this._updateBgm(); // 0→양수로 올리면 재생 시작
+  }
+  _setSfxVol(v) {
+    this._sfxVol = Math.max(0, Math.min(1, v));
+    this._saveVol('imjustawall_sfxvol', this._sfxVol);
+    if (this._sfxGain) this._sfxGain.gain.value = this._sfxVol;
+  }
+
+  // ===== ESC 메뉴(설정/일시정지) =====
+  _setupPauseMenu() {
+    const modal = document.getElementById('pause-modal');
+    if (!modal) return;
+    const bgm = document.getElementById('pm-bgm');
+    const sfx = document.getElementById('pm-sfx');
+    if (bgm) { bgm.value = Math.round(this._bgmVol * 100); bgm.addEventListener('input', () => this._setBgmVol(Number(bgm.value) / 100)); }
+    if (sfx) { sfx.value = Math.round(this._sfxVol * 100); sfx.addEventListener('input', () => this._setSfxVol(Number(sfx.value) / 100)); }
+    // 계속하기 / 방 나가기
+    modal.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-pm]');
+      if (!b) return;
+      if (b.dataset.pm === 'resume') this._closePauseMenu();
+      else if (b.dataset.pm === 'leave') this._leaveRoom();
+    });
+    // 강퇴(방장) — 목록 클릭 위임
+    const list = document.getElementById('pm-playerlist');
+    if (list) list.addEventListener('click', (e) => {
+      const k = e.target.closest('.pm-kick');
+      if (!k || !k.dataset.id || !this.socket) return;
+      this.socket.emit('kickPlayer', { id: k.dataset.id });
+    });
+    // ESC: 메뉴 토글(그리기 취소·채팅 닫기가 우선이면 양보)
+    window.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape' || e.repeat) return; // 길게 눌러도 1번만(깜빡임 방지)
+      if (this._titleVisible()) return;          // 타이틀 화면에선 메뉴 없음
+      if (!this._menuOpen && this.drawState === 'drawing') return; // 그리기 취소는 게임 루프가 처리
+      const ae = document.activeElement;
+      if (!this._menuOpen && ae && ae.id === 'chat-input') return; // 채팅 닫기 우선
+      e.preventDefault();
+      this._togglePauseMenu();
+    });
+  }
+  _titleVisible() {
+    const t = document.getElementById('title-screen');
+    return !!t && !t.classList.contains('hidden');
+  }
+  _togglePauseMenu() { if (this._menuOpen) this._closePauseMenu(); else this._openPauseMenu(); }
+  _openPauseMenu() {
+    const modal = document.getElementById('pause-modal');
+    if (!modal) return;
+    this._menuOpen = true;
+    this._refreshPauseList();
+    modal.classList.remove('hidden');
+  }
+  _closePauseMenu() {
+    const modal = document.getElementById('pause-modal');
+    if (modal) modal.classList.add('hidden');
+    this._menuOpen = false;
+  }
+  // 방장 전용: 플레이어 목록 + 강퇴 버튼(메뉴 열려 있을 때만 갱신)
+  _refreshPauseList() {
+    const wrap = document.getElementById('pm-players');
+    const list = document.getElementById('pm-playerlist');
+    if (!wrap || !list) return;
+    if (!this._isHost) { wrap.classList.add('hidden'); list.innerHTML = ''; return; }
+    wrap.classList.remove('hidden');
+    const rows = [];
+    this.players.forEach((p, id) => {
+      if (p.isCorpse) return; // 전시용 시체는 실제 플레이어 아님
+      const isMe = id === this.myId;
+      const isHost = id === this._hostId;
+      const tag = isHost ? '<span class="pm-host">방장</span>' : (isMe ? '<span class="pm-me">나</span>' : '');
+      const kick = (!isMe && !isHost) ? `<button class="pm-kick" data-id="${this._esc(id)}">강퇴</button>` : '';
+      rows.push(`<div class="pm-player"><span class="pm-pname">${this._esc(p.name)}</span>${tag}${kick}</div>`);
+    });
+    list.innerHTML = rows.join('') || '<div class="ts-room-empty">플레이어가 없습니다.</div>';
+  }
+  // 방 나가기: 확인 후 새로고침 → 소켓 끊김(서버가 방에서 제거·호스트 인계) → 타이틀 복귀
+  async _leaveRoom() {
+    this._closePauseMenu();
+    const ok = await this._confirm('방에서 나가시겠어요?');
+    if (ok) window.location.reload();
+    else this._openPauseMenu();
   }
 
   // 숨는이: 모든 명찰/그림자 숨김 토글(본인 시야에만). update 의 렌더 루프가 _hideTags 를 반영.
@@ -2237,6 +2364,10 @@ export class GameScene extends Phaser.Scene {
     if (!this.audioCtx) {
       const AC = window.AudioContext || window.webkitAudioContext;
       this.audioCtx = new AC();
+      // 효과음 마스터 게인 — 설정 메뉴의 '효과음' 볼륨으로 일괄 조절
+      this._sfxGain = this.audioCtx.createGain();
+      this._sfxGain.gain.value = this._sfxVol;
+      this._sfxGain.connect(this.audioCtx.destination);
     }
     if (this.audioCtx.state === 'suspended') this.audioCtx.resume();
   }
@@ -2255,7 +2386,7 @@ export class GameScene extends Phaser.Scene {
     g.gain.setValueAtTime(0.0001, t);
     g.gain.exponentialRampToValueAtTime(peak, t + 0.03);
     g.gain.exponentialRampToValueAtTime(0.0001, t + 0.42);
-    o.connect(g); g.connect(ctx.destination);
+    o.connect(g); g.connect(this._sfxGain || ctx.destination);
     o.start(t); o.stop(t + 0.45);
   }
 
@@ -2294,7 +2425,7 @@ export class GameScene extends Phaser.Scene {
     // [1단계] 이동 + 점프
     //   closed  : 평소 속도, 점프 가능
     //   holding : 캔버스 든 채 아주 느리게 이동(점프 불가, 캔버스 포즈 유지)
-    if (me && !this.chatOpen && (!this.caught || this.ghost) && (this.drawState === 'closed' || this.drawState === 'holding')) {
+    if (me && !this.chatOpen && !this._menuOpen && (!this.caught || this.ghost) && (this.drawState === 'closed' || this.drawState === 'holding')) {
       const holding = this.drawState === 'holding';
       let baseSpeed = this.myRole === 'seeker' ? SEEKER_SPEED : SPEED;
       if (time < this._slowUntil) baseSpeed *= SLOW_FACTOR; // 빗맞힘 후 둔화(술래)
@@ -2358,6 +2489,12 @@ export class GameScene extends Phaser.Scene {
     this._applyLobby(me);
     // 강제 휘파람 카운트다운 표시
     this._applyWhistleTimer();
+    // 강제 휘파람(개인 타이머): 내 카운트가 다 차면 스스로 휘파람 + 카운트 리셋
+    if (this._mode !== 'infection' && this.myRole === 'hider' && !this.caught && !this.gameEnded
+        && this._phase === 'playing' && this._nextWhistleAt && Date.now() >= this._nextWhistleAt) {
+      this._actWhistle(true);
+      this._nextWhistleAt = Date.now() + this._whistleInterval();
+    }
     // 탐색/정답 공개 카운트다운 + 정답 공개 네비게이션
     this._applyRoundTimer();
     this._updateRevealNav();
@@ -2367,7 +2504,7 @@ export class GameScene extends Phaser.Scene {
     const isSeeker = this.myRole === 'seeker';
     // 타이틀/입력창(닉네임·방이름·채팅)에 포커스 중이거나 게임 입장 전이면 게임 키 무시
     const typing = !!(document.activeElement && /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName));
-    const locked = this.caught || this.gameEnded || !this.myId || typing;
+    const locked = this.caught || this.gameEnded || !this.myId || typing || this._menuOpen;
     //  E = 캔버스 꺼내기/집어넣기 (숨는이 전용 — 술래는 위장 안 함)
     if (!locked && !isSeeker && Phaser.Input.Keyboard.JustDown(this.keys.e)) this._actCanvas();
     //  Q = 그리기 (술래: 꾸미기 / 숨는이: 위장)
@@ -2378,12 +2515,12 @@ export class GameScene extends Phaser.Scene {
     if (!locked && !this.chatOpen && !isSeeker &&
         Phaser.Input.Keyboard.JustDown(this.keys.h)) this._toggleTags();
     //  T = 채팅 입력창 열기 (그리는 중이 아닐 때)
-    if (Phaser.Input.Keyboard.JustDown(this.keys.t) && !typing && this.myId &&
+    if (Phaser.Input.Keyboard.JustDown(this.keys.t) && !typing && this.myId && !this._menuOpen &&
         (this.drawState === 'closed' || this.drawState === 'holding')) {
       this._openChat();
     }
     //  V = 마이크 ON/OFF · B = 음성채팅 참여 ON/OFF · − / = 볼륨
-    if (this.voice && !typing && this.myId) {
+    if (this.voice && !typing && this.myId && !this._menuOpen) {
       if (Phaser.Input.Keyboard.JustDown(this.keys.v)) this.voice.toggleMic();
       if (Phaser.Input.Keyboard.JustDown(this.keys.b)) this.voice.toggle();
       if (Phaser.Input.Keyboard.JustDown(this.keys.volUp)) this.voice.adjustVolume(0.1);
@@ -2640,6 +2777,25 @@ export class GameScene extends Phaser.Scene {
       }
     });
 
+    // 위장(그림 든 숨는이) 위로 술래가 겹치면, 술래 그림자(맨 아래 depth)가 그림 '뒤'로 깔려
+    // 위장이 들켰다. → 겹치는 동안엔 그 술래 그림자 depth 를 위장 그림 바로 위로 올려,
+    // 항상 그림 '위'에 오게 한다(그림 뒤에 깔리지 않음).
+    const disguised = [];
+    this.players.forEach((p) => { if (p.role === 'hider' && !p.caught && p.skin && p.skin.visible) disguised.push(p); });
+    if (disguised.length) {
+      this.players.forEach((s) => {
+        if (s.role !== 'seeker' || s.caught || !s.shadow) return;
+        let top = null;
+        for (const d of disguised) {
+          if (Math.abs(s.x - d.x) < 80 && Math.abs(s.y - d.y) < 96) {
+            const dep = d.skin.depth + 0.02; // 위장 그림 바로 위
+            if (top === null || dep > top) top = dep;
+          }
+        }
+        if (top !== null) s.shadow.setDepth(top);
+      });
+    }
+
     if (me) this.cameraTarget.setPosition(me.x, me.y - VIS_OFFY * me.scale);
 
     // 재장전 바: 로컬 술래가 쿨다운 중일 때 발밑에 진행도 표시(가득 차면 사라짐 = 발사 가능)
@@ -2672,7 +2828,7 @@ export class GameScene extends Phaser.Scene {
 
     // 커스텀 포인터(술래=크로스헤어 / 숨는이=cursor): 평소 표시, 그리기/잡힘/게임종료 시엔 숨김
     if (this._cursorEl && this.myRole) {
-      const show = !this.caught && !this.gameEnded
+      const show = !this.caught && !this.gameEnded && !this._menuOpen
         && this.drawState === 'closed' && !this.board.isOpen();
       if (show !== this._cursorShown) {
         this._cursorShown = show;
