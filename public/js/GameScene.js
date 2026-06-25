@@ -92,6 +92,7 @@ export class GameScene extends Phaser.Scene {
     this.load.image('obj_chest', SL + 'Objects/Chest.png');               // 보물상자
     this.load.image('zone_seeker', 'map/seeker.png');                     // 술래 지원 구역 발판
     this.load.spritesheet('ts_fence', SL + 'Tilesets/Fences.png', { frameWidth: 16, frameHeight: 16 });
+    this.load.spritesheet('grass_tufts', SL + 'Tilesets/grass_tufts.png', { frameWidth: 16, frameHeight: 16 }); // 바닥에 살랑이는 잔디(2×2, 4종)
     // 커스텀 마우스 커서(크로스헤어/cursor)는 DOM(#game-cursor)으로 렌더 → Phaser 텍스처 불필요
     // 숨는이: HIDER/<색> 3종(gray/lemon/orange), 구조 동일
     HIDER_SETS.forEach((c) => {
@@ -190,6 +191,10 @@ export class GameScene extends Phaser.Scene {
     this.zoneImg = this.add.image(3400, 4416, 'zone_seeker').setScale(4).setDepth(4416 - 55);
     // 단상(점프로 올라가는 z 플랫폼): 이 위에 서면 술래 지원
     this._podium = { x: 3400, y: 4416, r: 138, r2: 138 * 138, h: 40 };
+    // z-인식 솔리드 목록(단상 + 맵 오브젝트). 점프(z)로 높이를 넘으면 통과/착지 — 모두 공용 처리.
+    //  · squish: 위쪽 판정만 좁혀 머리 방향 끼임 방지(단상만 사용)
+    this.solids = [{ x: this._podium.x, y: this._podium.y, r: this._podium.r, h: this._podium.h, squish: 1.55 }];
+    if (this.obstacles) for (const o of this.obstacles) this.solids.push(o);
     // 커스텀 마우스 커서(DOM): 캔버스/UI/셰이더 위에 항상 표시 + 마우스를 따라다님
     this._setupCursor();
 
@@ -461,22 +466,22 @@ export class GameScene extends Phaser.Scene {
     me._kbx = 0; me._kby = 0;
   }
 
-  // 이동 충돌: 발밑(x,y)이 물(섬 밖)이거나 나무/덤불 밑동에 닿으면 true
+  // 이동 충돌: 발밑(x,y)이 물(섬 밖)이면 true. (나무/덤불 등 오브젝트는 _solidBlock 가 z-인식으로 처리)
   _hitObstacle(x, y) {
     const map = this.map;
-    // 섬 밖(물)이면 막기 — land 마스크 기반
+    // 섬 밖(물)이면 막기 — land 마스크 기반. 발 주변 여유(margin)로 물가에 바짝 못 붙게.
+    // 위/아래 비대칭(대칭 30 기준 아래→위로 이전):
+    //  · 위쪽(북, 물이 위) margin 크게 → 물·지면 사이가 밟히지 않게
+    //  · 아래쪽(남, 물이 아래) margin 작게 → 멀리서부터 막히지 않게
     if (map && map.landMask) {
       const t = map.tile, m = map.landMask;
-      const tx = Math.floor(x / t), ty = Math.floor(y / t);
-      if (ty < 0 || ty >= m.length || tx < 0 || tx >= m[0].length || !m[ty][tx]) return true;
-    }
-    // 나무/덤불 밑동 박스
-    const r = 9, list = this.obstacles;
-    if (list) {
-      for (let i = 0; i < list.length; i++) {
-        const o = list[i];
-        if (x > o.x - r && x < o.x + o.w + r && y > o.y - r && y < o.y + o.h + r) return true;
-      }
+      const upMg = 46, downMg = 14, sideMg = 24;
+      const rows = m.length, cols = m[0].length;
+      const water = (px, py) => {
+        const tx = Math.floor(px / t), ty = Math.floor(py / t);
+        return ty < 0 || ty >= rows || tx < 0 || tx >= cols || !m[ty][tx];
+      };
+      if (water(x, y) || water(x - sideMg, y) || water(x + sideMg, y) || water(x, y - upMg) || water(x, y + downMg)) return true;
     }
     return false;
   }
@@ -600,7 +605,7 @@ export class GameScene extends Phaser.Scene {
     if (!me || this.drawState !== 'closed') return;
     this.openIntent = intent;
     this.drawState = 'opening';
-    me.z = 0; me.zVel = 0; // 점프 중 진입해도 바닥에서
+    me.z = this._groundHeight(me.x, me.y); me.zVel = 0; // 발밑 높이(장애물 위면 그 위)로 고정
 
     me.currentAnim = 'canvas';
     me.body.play(me.set + '_canvas');
@@ -630,7 +635,7 @@ export class GameScene extends Phaser.Scene {
     const me = this.players.get(this.myId);
     if (!me) return;
     if (this.myRole === 'seeker') {
-      me.z = 0; me.zVel = 0;            // 점프 중 진입해도 바닥에서
+      me.z = this._groundHeight(me.x, me.y); me.zVel = 0; // 발밑 높이(장애물 위면 그 위)로 고정
       me.currentAnim = 'idle';      // 꾸미는 동안 차분한 기본 포즈(캐릭터 위에 그림)
       me.body.play(me.set + '_idle');
     }
@@ -1801,38 +1806,45 @@ export class GameScene extends Phaser.Scene {
   _actJump() {
     const me = this.players.get(this.myId);
     if (!me || this.caught || this.gameEnded || this.chatOpen) return;
-    if (this.drawState !== 'closed') return;       // 캔버스 들거나 그리는 중엔 점프 불가
+    if (this.drawState !== 'closed' && this.drawState !== 'holding') return; // 그리기(편집) 중엔 점프 불가, 들고 있는 건 가능
     if (me.z <= this._groundHeight(me.x, me.y) + 1) me.zVel = JUMP_VEL; // 바닥/단상 위에서만
   }
 
-  // 단상 중심까지의 (위쪽을 좁힌) 제곱 거리. top 이 클수록 위쪽 판정이 좁음
-  _podiumDist2(x, y, top) {
-    const p = this._podium;
-    if (!p) return Infinity;
-    const dx = x - p.x;
-    let dy = y - p.y;
-    if (dy < 0) dy *= top;
-    return dx * dx + dy * dy;
+  // (x,y)의 solid 타원 내부 정규화 거리(<1 이면 내부). rx/ry 없으면 r 사용. squish 는 위쪽만 좁힘.
+  _solidND(s, x, y) {
+    const rx = s.rx || s.r, ry = s.ry || s.r;
+    const dx = x - s.x;
+    let dy = y - s.y;
+    if (dy < 0) dy *= (s.squish || 1);
+    return (dx * dx) / (rx * rx) + (dy * dy) / (ry * ry);
   }
 
-  // 발밑 바닥 높이(단상 위면 단상 높이)
+  // 발밑 바닥 높이: (x,y)가 올라탄 solid 중 가장 높은 높이(없으면 0)
   _groundHeight(x, y) {
-    const p = this._podium;
-    if (p && this._podiumDist2(x, y, 1.55) < p.r2) return p.h;
-    return 0;
+    const S = this.solids;
+    let h = 0;
+    if (S) for (let i = 0; i < S.length; i++) {
+      const s = S[i];
+      if (this._solidND(s, x, y) < 1 && s.h > h) h = s.h;
+    }
+    return h;
   }
 
-  // 단상 옆면 충돌: 충분히 높지 않으면(z < 단상높이) 단상 안으로 더 들어가는 이동만 막음
-  // (접선/탈출 방향은 허용 → 가장자리에서 미끄러짐, 끼임 없음)
-  _podiumBlock(x, y) {
-    const p = this._podium;
-    if (!p) return false;
+  // solid 옆면 충돌: 점프(z)가 그 solid 높이보다 낮으면, 안으로 더 들어가는 이동만 막음
+  // (접선/탈출 방향은 허용 → 가장자리에서 미끄러짐, 끼임 없음). 충분히 높으면 통과(점프로 넘기/착지).
+  _solidBlock(x, y) {
     const me = this.players.get(this.myId);
-    if (!me || me.z >= p.h - 4) return false; // 점프로 충분히 높으면 통과
-    const d2 = this._podiumDist2(x, y, 1.55);
-    if (d2 >= p.r2) return false;             // 단상 밖이면 통과
-    const cd2 = this._podiumDist2(me.x, me.y, 1.55);
-    return d2 < cd2;                          // 중심으로 더 가까워지는 이동만 차단
+    if (!me) return false;
+    const S = this.solids;
+    if (!S) return false;
+    for (let i = 0; i < S.length; i++) {
+      const s = S[i];
+      if (me.z >= s.h - 4) continue;            // 이 solid 보다 충분히 높으면 통과
+      const nd = this._solidND(s, x, y);
+      if (nd >= 1) continue;                     // solid 밖이면 통과
+      if (nd < this._solidND(s, me.x, me.y)) return true; // 중심으로 더 가까워지는 이동만 차단
+    }
+    return false;
   }
 
   _actWhistle(forced = false) {
@@ -2463,8 +2475,8 @@ export class GameScene extends Phaser.Scene {
         // 축 분리 이동 + 장애물 충돌(막히면 그 축만 정지 → 벽 따라 미끄러짐)
         const nx = Phaser.Math.Clamp(me.x + (vx / len) * speed * dt, 30, this.world.width - 30);
         const ny = Phaser.Math.Clamp(me.y + (vy / len) * speed * dt, topLimit, this.world.height - 10);
-        if (!this._hitObstacle(nx, me.y) && !this._podiumBlock(nx, me.y)) me.x = nx;
-        if (!this._hitObstacle(me.x, ny) && !this._podiumBlock(me.x, ny)) me.y = ny;
+        if (!this._hitObstacle(nx, me.y) && !this._solidBlock(nx, me.y)) me.x = nx;
+        if (!this._hitObstacle(me.x, ny) && !this._solidBlock(me.x, ny)) me.y = ny;
         if (vx < 0) me.facingLeft = true;
         else if (vx > 0) me.facingLeft = false;
       }
@@ -2476,22 +2488,28 @@ export class GameScene extends Phaser.Scene {
         const ny = Phaser.Math.Clamp(me.y + me._kby * dt, topLimit, this.world.height - 10);
         if (!this._hitObstacle(nx, me.y)) me.x = nx;
         if (!this._hitObstacle(me.x, ny)) me.y = ny;
-        me._kbx *= 0.8; me._kby *= 0.8;
+        // 감쇠는 프레임당이 아니라 시간 기반(1/60초당 0.8) → FPS/환경과 무관하게 밀리는 거리 일정
+        const kbDecay = Math.pow(0.8, dt * 60);
+        me._kbx *= kbDecay; me._kby *= kbDecay;
         if (Math.abs(me._kbx) < 6 && Math.abs(me._kby) < 6) { me._kbx = 0; me._kby = 0; }
       }
 
       // 점프/이동 애니는 평소(closed)에만 — 캔버스 들고는 점프 불가 + 캔버스 포즈 유지
+      // 점프/중력 물리는 평소(closed)·캔버스 든 상태(holding) 모두 적용(캔버스 들고도 점프 가능)
+      const ground = this._groundHeight(me.x, me.y);
+      if (Phaser.Input.Keyboard.JustDown(this.keys.space)) this._actJump();
+      if (me.z > ground || me.zVel !== 0) {
+        me.z += me.zVel * dt;
+        me.zVel -= GRAVITY * dt;
+        // 착지는 '하강 중(zVel<=0)'에만 → 상승 중 낮은 장애물 위를 지나가도 점프가 끊기지 않음
+        if (me.zVel <= 0 && me.z <= ground) { me.z = ground; me.zVel = 0; }
+      } else {
+        me.z = ground; // 단상/장애물 위면 그 높이 유지
+      }
+      // 애니는 평소(closed)에만 갱신 — 캔버스 든 상태는 'canvas' 위장 포즈 유지(점프해도 그대로)
       if (!holding) {
-        const ground = this._groundHeight(me.x, me.y);
-        if (Phaser.Input.Keyboard.JustDown(this.keys.space)) this._actJump();
-        if (me.z > ground || me.zVel > 0) {
-          me.z += me.zVel * dt;
-          me.zVel -= GRAVITY * dt;
-          if (me.z <= ground) { me.z = ground; me.zVel = 0; }
-        } else {
-          me.z = ground; // 단상 위면 그 높이 유지
-        }
-        if (me.z > ground) me.localAnim = me.zVel > 0 ? 'jump' : 'fall';
+        if (me.zVel > 0) me.localAnim = 'jump';
+        else if (me.z > ground) me.localAnim = 'fall';
         else me.localAnim = moving ? 'run' : 'idle'; // 세트가 술래(걸음)/숨는이 run 텍스처를 결정
       }
 
@@ -2900,6 +2918,16 @@ export class GameScene extends Phaser.Scene {
         }
         const tgt = hide ? 0.4 : 1;
         o.img.alpha += (tgt - o.img.alpha) * 0.2; // 부드럽게 전환
+        // 바람 흔들림(식물만): 밑동(origin) 기준으로 좌우로 살랑. 정적인 위장이 더 도드라짐.
+        if (o.swayAmp) o.img.rotation = Math.sin(time * o.swaySpeed + o.swayPhase) * o.swayAmp;
+      }
+    }
+
+    // 바닥 잔디 살랑임: 밑동 기준 좌우 회전(제각각 위상). 움직이는 잔디 사이에서 정적 위장이 도드라짐.
+    if (this.map && this.map.grass) {
+      const g = this.map.grass;
+      for (let i = 0; i < g.length; i++) {
+        g[i].img.rotation = Math.sin(time * g[i].swaySpeed + g[i].swayPhase) * g[i].swayAmp;
       }
     }
   }

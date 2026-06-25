@@ -11,11 +11,20 @@ const TS = 16;          // 원본 타일 크기(px)
 const SCALE = 4;        // 4배 확대(타일/오브젝트를 큼직하게)
 const T = TS * SCALE;   // 화면상 타일 크기(64px)
 
+// 바람 흔들림 진폭(rad). 식물류만 살랑임 — 바위/그루터기/통나무/버섯은 흔들지 않음.
+// GameScene update 가 origin(바닥) 기준으로 img.rotation 을 사인파로 흔든다.
+const SWAY_AMP = {
+  tree_m: 0.028, tree_a: 0.028, tree_s: 0.034,
+  bush: 0.05, bush2: 0.05,
+  sunflower: 0.055, flower_p: 0.08, flower_y: 0.08,
+};
+
 export class MapBuilder {
   constructor(scene) {
     this.scene = scene;
     this.obstacles = [];
     this.objects = [];   // 반투명 처리용 오브젝트(나무/덤불 등)
+    this.grass = [];     // 바닥에 살랑이는 잔디 스프라이트(GameScene 가 흔듦)
     this.landMask = null;
     this.tile = T;
   }
@@ -139,7 +148,8 @@ export class MapBuilder {
       const px = (c.tx + 0.5) * T, py = (c.ty + 1) * T;
       if (tooClose(px, py, T * 2.3)) continue;
       this._obj(px, py, trees[Math.floor(rnd() * trees.length)]);
-      this.obstacles.push({ x: px - 18, y: py, w: 36, h: 26 });
+      // 밑동에 가로로 납작한 타원 + z-인식 높이 → 점프로 넘거나 위에 올라섬(단상과 같은 충돌)
+      this.obstacles.push({ x: px, y: py + 12, rx: 48, ry: 14, h: 55 });
       placed.push({ x: px, y: py }); i++;
     }
     for (let i = 0, tries = 0; i < propWant && tries < propWant * 16; tries++) {
@@ -148,8 +158,8 @@ export class MapBuilder {
       if (tooClose(px, py, T * 1.8)) continue;
       const key = props[Math.floor(rnd() * props.length)];
       this._obj(px, py, key);
-      if (key === 'bush' || key === 'bush2') this.obstacles.push({ x: px - 34, y: py, w: 68, h: 26 });
-      else if (key === 'rock_l' || key === 'rock_s') this.obstacles.push({ x: px - 26, y: py - 4, w: 52, h: 24 });
+      if (key === 'bush' || key === 'bush2') this.obstacles.push({ x: px, y: py + 10, rx: 52, ry: 14, h: 40 });
+      else if (key === 'rock_l' || key === 'rock_s') this.obstacles.push({ x: px, y: py + 8, rx: 40, ry: 12, h: 30 });
       placed.push({ x: px, y: py }); i++;
     }
 
@@ -169,7 +179,7 @@ export class MapBuilder {
       if (!at(c.tx, c.ty)) return;
       const px = (c.tx + 0.5) * T, py = (c.ty + 1) * T;
       this._place(px, py, 'obj_coop', undefined, 3);
-      this.obstacles.push({ x: px - 42, y: py - 30, w: 84, h: 32 });
+      this.obstacles.push({ x: px, y: py - 8, rx: 46, ry: 28, h: 80 }); // 건물: 높이>최대점프 → 못 넘는 은폐물 유지
       placed.push({ x: px, y: py });
     });
 
@@ -202,6 +212,35 @@ export class MapBuilder {
       placed.push({ x: px, y: py }); i++;
     }
 
+    // 바닥에 살랑이는 잔디 스프라이트(게임 영역 땅 위, 캐릭터/그림자 아래). 정적 단색 위장이 더 도드라짐.
+    if (this.scene.textures.exists('grass_tufts')) {
+      const frames = this.scene.textures.get('grass_tufts').getFrameNames().length || 4;
+      // 8방향이 모두 땅인 '안쪽' 타일에만 → 물가(coast) 한 줄엔 잔디가 안 생겨 물 위로 안 삐져나옴
+      const gameLand = [];
+      for (let ty = 2; ty < ROWS; ty++) for (let tx = 0; tx < COLS; tx++) {
+        if (!land[ty][tx]) continue;
+        let solid = true;
+        for (let dy = -1; dy <= 1 && solid; dy++) for (let dx = -1; dx <= 1; dx++) if (!at(tx + dx, ty + dy)) { solid = false; break; }
+        if (solid) gameLand.push({ tx, ty });
+      }
+      const shuffled = gameLand.sort(() => rnd() - 0.5);
+      const want = Math.min(3000, shuffled.length); // 타일당 하나(균등 간격 → 서로 안 겹침), 상한만 둠
+      for (let i = 0; i < want; i++) {
+        const c = shuffled[i];
+        const px = (c.tx + 0.5 + (rnd() - 0.5) * 0.4) * T; // 살짝만 흩어 격자 느낌 줄임
+        const py = (c.ty + 1 - rnd() * 0.3) * T;
+        const fr = Math.floor(rnd() * frames);
+        const img = this.scene.add.image(px, py, 'grass_tufts', fr)
+          .setOrigin(0.5, 1).setScale(SCALE).setDepth(-800); // 풀(-999) 위, 그림자(-5)/캐릭터 아래
+        this.grass.push({
+          img,
+          swayAmp: 0.06 + rnd() * 0.05,                 // 잔디는 좀 더 살랑
+          swayPhase: rnd() * Math.PI * 2,
+          swaySpeed: 0.0016 + rnd() * 0.0010,
+        });
+      }
+    }
+
     return this.obstacles;
   }
 
@@ -228,16 +267,9 @@ export class MapBuilder {
     if (!NE) return 27;
     if (!SW) return 17;
     if (!SE) return 16;
-    // 완전 내부: 민짜 + V자 풀싹(56·67, 다수) + 동그란 풀무더기(58·59·69·70, 소량)
-    const h = ((tx * 131) ^ (ty * 557)) >>> 0;
-    const v = (h % 1000) / 1000;
-    if (v < 0.45) return 12;   // 민짜
-    if (v < 0.68) return 56;   // V자(어두운)
-    if (v < 0.90) return 67;   // V자(밝은)
-    if (v < 0.93) return 58;   // 동그란(소량)
-    if (v < 0.95) return 59;
-    if (v < 0.98) return 69;
-    return 70;
+    // 완전 내부: 민짜(기본) 타일. 풀싹 디테일은 그 위에 '움직이는 잔디 스프라이트'로 깔린다
+    // (정적 타일 풀싹과 이중으로 겹치지 않도록 여기선 민짜만 사용)
+    return 12;
   }
 
   _defineFrames() {
@@ -258,14 +290,23 @@ export class MapBuilder {
     if (tc && !tc.has('chest0')) tc.add('chest0', 0, 16, 14, 26, 18);    // 닫힌 상자
   }
 
-  _obj(px, py, key) { return this._place(px, py, 'obj_biom', key, SCALE); }
+  _obj(px, py, key) { return this._place(px, py, 'obj_biom', key, SCALE, undefined, key); }
 
   // 오브젝트 배치. depthOff 가 주어지면 바닥(다리)으로 깔고 반투명 대상에서 제외
-  _place(px, py, texKey, frame, scale, depthOff) {
+  // swayKey: 식물 키면 바람 흔들림 진폭을 매겨 저장(식물만 살랑임)
+  _place(px, py, texKey, frame, scale, depthOff, swayKey) {
     const s = this.scene;
     const isFloor = depthOff != null;
     const img = s.add.image(px, py, texKey, frame).setOrigin(0.5, 1).setScale(scale).setDepth(isFloor ? depthOff : py);
-    if (!isFloor) this.objects.push({ img, x: px, y: py }); // 본인 주변 반경 반투명용
+    if (!isFloor) {
+      const amp = (swayKey && SWAY_AMP[swayKey]) || 0;
+      this.objects.push({
+        img, x: px, y: py,
+        swayAmp: amp,                                  // 0이면 안 흔들림(바위 등)
+        swayPhase: Math.random() * Math.PI * 2,        // 제각각 위상(같이 흔들리지 않게)
+        swaySpeed: 0.0012 + Math.random() * 0.0007,    // 흔들림 속도(주기 ~4~6초)
+      });
+    }
     return img;
   }
 }
