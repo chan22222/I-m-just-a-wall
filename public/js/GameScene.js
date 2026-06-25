@@ -987,11 +987,12 @@ export class GameScene extends Phaser.Scene {
     this.gameEnded = true;
     this._clearRevealNav();
     this._returnAt = returnMs > 0 ? Date.now() + returnMs : 0;
-    // 숨는이 승은 정답 공개와 동시에 이미 메시지를 띄웠으므로 새로 만들지 않음
-    if (winner === 'hider') return;
-    this._showWinMessage('seeker');
+    // 정답 공개(reveal) 단계에서 온 숨는이 승은 이미 메시지를 띄웠으므로 새로 만들지 않음.
+    // 단, 술래 이탈처럼 reveal 없이 들어온 숨는이 승은 여기서 메시지를 띄운다.
+    if (winner === 'hider' && this._phase === 'reveal') return;
+    this._showWinMessage(winner);
     const cam = this.cameras.main;
-    // 로비 복귀 안내(술래 승은 10초 카운트) — 승리 메시지 아래
+    // 로비 복귀 안내 카운트 — 승리 메시지 아래
     this._gameOverSub = this.add.text(cam.width / 2, cam.height * 0.66 + 62, '', {
       fontFamily: UI_FONT, fontSize: '18px', fontStyle: 'bold',
       color: '#e7e9ee', stroke: '#101218', strokeThickness: 5, align: 'center',
@@ -1054,7 +1055,7 @@ export class GameScene extends Phaser.Scene {
     // 감염 시체 등 클라 전용 잔여 엔티티 제거(다음 판에 남지 않도록)
     for (const [id, p] of [...this.players]) {
       if (p.isCorpse) {
-        ['shadow', 'body', 'skin', 'label', 'gun', 'gunShot', 'hostTag'].forEach((k) => { if (p[k]) p[k].destroy(); });
+        ['shadow', 'body', 'skin', 'label', 'gun', 'gunShot', 'hostTag', 'bubble'].forEach((k) => { if (p[k]) p[k].destroy(); });
         this.players.delete(id);
       }
     }
@@ -1232,11 +1233,13 @@ export class GameScene extends Phaser.Scene {
         case 'join-menu': show('public-list'); this.socket.emit('listRooms'); break;
         case 'back': show('main'); break;
         case 'create': {
+          const isPublic = btn.dataset.public === '1';
           const name = (document.getElementById('ts-roomname').value || '').trim();
-          if (!name) { this._titleMsg('방 이름을 입력하세요.'); break; }
+          // 공개 방은 이름 필수, 비공개 방은 비우면 서버가 랜덤 이름 생성
+          if (isPublic && !name) { this._titleMsg('방 이름을 입력하세요.'); break; }
           const num = (id) => Number(document.getElementById(id).value);
           this.socket.emit('createRoom', {
-            name, isPublic: btn.dataset.public === '1', nickname: nick(),
+            name, isPublic, nickname: nick(),
             maxPlayers: num('ts-max'), seekerCount: num('ts-seekers'), seekerWait: num('ts-swait'),
             hiderTime: num('ts-htime'), revealTime: num('ts-reveal'), whistleTime: num('ts-whistle'),
             mode: document.getElementById('ts-mode').value,
@@ -1602,7 +1605,10 @@ export class GameScene extends Phaser.Scene {
 
     socket.on('playerDrew', ({ id, dataURL }) => this.applyDrawing(id, dataURL));
     socket.on('playerWhistled', ({ id, x, y }) => this._onWhistle(id, x, y));
-    socket.on('chatMessage', ({ id, name, text }) => this._addChatMessage(name, text, id === this.myId));
+    socket.on('chatMessage', ({ id, name, text }) => {
+      this._addChatMessage(name, text, id === this.myId);
+      this._showChatBubble(id, name, text); // 캐릭터 위 말풍선(명찰 대신 '닉네임 : 메시지')
+    });
     socket.on('playerCaught', ({ id }) => this._onCaught(id));
     socket.on('gameOver', ({ winner, returnMs } = {}) => this._onGameOver(winner, returnMs));
     socket.on('returnToLobby', ({ players } = {}) => this._returnToLobby(players || []));
@@ -1631,6 +1637,7 @@ export class GameScene extends Phaser.Scene {
       p.shadow.destroy();
       p.label.destroy();
       if (p.hostTag) p.hostTag.destroy();
+      if (p.bubble) p.bubble.destroy();
       if (p.gun) p.gun.destroy();
       if (p.gunShot) p.gunShot.destroy();
       this.players.delete(id);
@@ -1648,7 +1655,7 @@ export class GameScene extends Phaser.Scene {
       id, role: newRole, name: p.name, color: p.color,
       x: p.x, y: p.y, angle: p.angle, holding: false, caught: p.caught,
     };
-    ['shadow', 'body', 'skin', 'label', 'gun', 'gunShot', 'hostTag'].forEach((k) => { if (p[k]) p[k].destroy(); });
+    ['shadow', 'body', 'skin', 'label', 'gun', 'gunShot', 'hostTag', 'bubble'].forEach((k) => { if (p[k]) p[k].destroy(); });
     this.players.delete(id);
     this._addPlayer(info);
     if (id === this.myId) {
@@ -2133,6 +2140,62 @@ export class GameScene extends Phaser.Scene {
     window.setTimeout(() => { if (div.parentNode) div.remove(); }, 30000);
   }
 
+  // 캐릭터 머리 위 말풍선. 옅은 어두운 배경 + 테두리 + 아래로 향한 꼬리.
+  // Graphics(도형)+Text 를 컨테이너로 묶는다. 컨테이너 로컬 원점(0,0) = 꼬리 끝 →
+  // update 루프에서 명찰 바로 위에 끝점을 맞추고, 표시 여부는 명찰과 동일 규칙을 따른다.
+  _showChatBubble(id, name, text) {
+    const p = this.players.get(id);
+    if (!p) return;
+    const msg = String(text || '').trim().slice(0, 60);
+    if (!msg) return;
+    // 말풍선엔 명찰 대신 '닉네임 : 메시지' 를 함께 표기
+    const line = `${name || p.name} : ${msg}`;
+    if (!p.bubble) {
+      const g = this.add.graphics();
+      const t = this.add.text(0, 0, '', {
+        fontFamily: UI_FONT, fontSize: '13px', color: '#e7e9ee',
+        align: 'center', wordWrap: { width: 220 },
+      }).setOrigin(0.5, 0.5);
+      p.bubbleG = g;
+      p.bubbleText = t;
+      p.bubble = this.add.container(0, 0, [g, t]); // destroy 시 자식(도형/글자)도 함께 정리됨
+    }
+    p.bubbleText.setText(line);
+    this._drawChatBubble(p);
+    p.bubble.setVisible(true);
+    p.bubbleUntil = Date.now() + 4000;
+  }
+
+  // 말풍선 도형을 글자 크기에 맞춰 다시 그린다(둥근 사각형 본문 + 아래 꼬리, 한 번에 fill/stroke).
+  _drawChatBubble(p) {
+    const t = p.bubbleText, g = p.bubbleG;
+    const padX = 9, padY = 6, tailW = 12, tailH = 8;
+    const w = Math.ceil(t.width) + padX * 2;
+    const h = Math.ceil(t.height) + padY * 2;
+    const r = Math.min(8, Math.min(w, h) / 2);
+    t.setPosition(0, -tailH - h / 2); // 본문 중앙(꼬리 끝이 원점, 본문은 그 위)
+    const rad = Phaser.Math.DegToRad;
+    g.clear();
+    g.fillStyle(0x101218, 0.82);     // 옅은 어두운 배경
+    g.lineStyle(1.5, 0xc7ccd6, 0.9); // 밝은 테두리
+    g.beginPath();
+    g.moveTo(-w / 2 + r, -tailH - h);                                 // 윗변 시작
+    g.lineTo(w / 2 - r, -tailH - h);                                  // 윗변
+    g.arc(w / 2 - r, -tailH - h + r, r, rad(-90), rad(0));            // 우상 모서리
+    g.lineTo(w / 2, -tailH - r);                                      // 오른변
+    g.arc(w / 2 - r, -tailH - r, r, rad(0), rad(90));                 // 우하 모서리
+    g.lineTo(tailW / 2, -tailH);                                      // 아랫변 → 꼬리 오른쪽
+    g.lineTo(0, 0);                                                   // 꼬리 끝(아래)
+    g.lineTo(-tailW / 2, -tailH);                                     // 꼬리 왼쪽 → 아랫변
+    g.lineTo(-w / 2 + r, -tailH);                                     // 아랫변
+    g.arc(-w / 2 + r, -tailH - r, r, rad(90), rad(180));             // 좌하 모서리
+    g.lineTo(-w / 2, -tailH - h + r);                                 // 왼변
+    g.arc(-w / 2 + r, -tailH - h + r, r, rad(180), rad(270));        // 좌상 모서리
+    g.closePath();
+    g.fillPath();
+    g.strokePath();
+  }
+
   // 고양이는 항상 애니메이션(본체로 늘 존재)
   _setAnim(p, state) {
     if (!state || p.currentAnim === state) return;
@@ -2534,6 +2597,13 @@ export class GameScene extends Phaser.Scene {
         p.hostTag.setDepth(p.y + 0.11);
       }
 
+      // 채팅 말풍선: 사라진 명찰 자리를 대신하도록 꼬리 끝을 명찰 하단(머리쪽)에 맞춤(표시 여부는 아래에서)
+      if (p.bubble) {
+        p.bubble.x = p.x;
+        p.bubble.y = p.label.y + p.label.height / 2;
+        p.bubble.setDepth(p.y + 0.2);
+      }
+
       // 명찰/그림자 표시 여부(본인 시야에만 적용):
       //  · 술래  → 남(숨는이)의 명찰/그림자는 숨김(본인 것만 표시)
       //  · 숨는이 → H 토글(_hideTags) 시 모든 사람 숨김
@@ -2552,6 +2622,15 @@ export class GameScene extends Phaser.Scene {
         if (p.skin) p.skin.setAlpha(ghostShown ? 0.4 : 0);
         p.shadow.setVisible(false);
         p.label.setVisible(false);
+      }
+
+      // 말풍선은 명찰과 동일한 규칙으로만 노출(술래엔 숨김 + H 토글 + 유령 숨김) + 4초 후 사라짐.
+      // 떠 있는 동안엔 명찰(과 host 태그)을 숨겨 말풍선이 그 자리를 대신한다(닉네임은 말풍선에 표기).
+      const bubbleOn = !!p.bubble && p.label.visible && Date.now() <= (p.bubbleUntil || 0);
+      if (p.bubble) p.bubble.setVisible(bubbleOn);
+      if (bubbleOn) {
+        p.label.setVisible(false);
+        if (p.hostTag) p.hostTag.setVisible(false);
       }
     });
 

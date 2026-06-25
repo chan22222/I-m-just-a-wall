@@ -56,6 +56,15 @@ function clampNum(v, min, max, def) {
   return Math.max(min, Math.min(max, Math.round(v)));
 }
 
+// 이름 미입력(비공개 방) 시 자동으로 붙일 랜덤 방 이름
+const ROOM_ADJ = ['은밀한', '조용한', '깜깜한', '수상한', '아늑한', '비밀의', '한적한', '으슥한'];
+const ROOM_NOUN = ['아지트', '은신처', '대기실', '놀이터', '소굴', '다락방', '창고', '비밀기지'];
+function genRoomName() {
+  const a = ROOM_ADJ[Math.floor(Math.random() * ROOM_ADJ.length)];
+  const n = ROOM_NOUN[Math.floor(Math.random() * ROOM_NOUN.length)];
+  return `${a} ${n}`;
+}
+
 // 같은 이름의 (사람이 있는) 방이 이미 있는지
 function roomNameExists(name) {
   for (const room of rooms.values()) {
@@ -170,10 +179,15 @@ io.on('connection', (socket) => {
 
   // 방 만들기(공개/비공개 + 옵션) → 코드 생성 후 자동 입장
   socket.on('createRoom', ({ name, isPublic, nickname, maxPlayers, seekerWait, hiderTime, revealTime, seekerCount, whistleTime, mode } = {}) => {
-    name = String(name || '방').slice(0, 20).trim() || '방';
-    if (roomNameExists(name)) {
-      socket.emit('joinError', { message: '이미 있는 방 이름 입니다.' });
-      return;
+    name = String(name || '').slice(0, 20).trim();
+    if (name) {
+      if (roomNameExists(name)) {
+        socket.emit('joinError', { message: '이미 있는 방 이름 입니다.' });
+        return;
+      }
+    } else {
+      // 이름 미입력(비공개 방) → 유일한 랜덤 이름 자동 생성
+      do { name = genRoomName(); } while (roomNameExists(name));
     }
     let code;
     do { code = genRoomCode(); } while (rooms.has(code));
@@ -187,7 +201,7 @@ io.on('connection', (socket) => {
     room.hiderTime = clampNum(hiderTime, 30, 600, 200);
     room.revealTime = clampNum(revealTime, 5, 100, 30);
     room.whistleTime = clampNum(whistleTime, 10, 100, 30);
-    room.seekerCount = clampNum(seekerCount, 1, 3, 2);
+    room.seekerCount = clampNum(seekerCount, 1, 3, 1);
     room.mode = mode === 'infection' ? 'infection' : 'basic';
     socket.emit('roomCreated', { roomId: code, isPublic: room.isPublic });
     doJoin(code, nickname);
@@ -214,7 +228,7 @@ io.on('connection', (socket) => {
     const room = rooms.get(currentRoomId);
     if (!room || room.hostId !== socket.id || room.phase !== 'lobby') return;
     room.maxPlayers = clampNum(opts.maxPlayers, 2, 30, room.maxPlayers || 12);
-    room.seekerCount = clampNum(opts.seekerCount, 1, 3, room.seekerCount || 2);
+    room.seekerCount = clampNum(opts.seekerCount, 1, 3, room.seekerCount || 1);
     room.seekerWait = clampNum(opts.seekerWait, 5, 200, room.seekerWait || 70);
     room.hiderTime = clampNum(opts.hiderTime, 30, 600, room.hiderTime || 200);
     room.revealTime = clampNum(opts.revealTime, 5, 100, room.revealTime || 30);
@@ -237,8 +251,10 @@ io.on('connection', (socket) => {
     if (!currentRoomId) return;
     const room = rooms.get(currentRoomId);
     if (!room || room.hostId !== socket.id || room.phase !== 'lobby') return;
-    if (room.players.size < 3) {
-      socket.emit('startError', { message: '게임 시작에는 최소 3명이 필요합니다.' });
+    // 공개 방은 최소 3명 필요, 비공개 방은 혼자서도 시작 가능
+    const minPlayers = room.isPublic ? 3 : 1;
+    if (room.players.size < minPlayers) {
+      socket.emit('startError', { message: `게임 시작에는 최소 ${minPlayers}명이 필요합니다.` });
       return;
     }
     room.phase = 'starting';
@@ -454,10 +470,11 @@ function beginRound(roomId, room) {
 }
 
 // 라운드 종료: 승패 알림 + 로비 복귀 예약(술래 승은 10초 안내, 숨는이 승은 즉시)
-function endRound(roomId, room, winner) {
+function endRound(roomId, room, winner, returnMs) {
   if (room.phase === 'ended') return;
   room.phase = 'ended';
-  const returnMs = winner === 'seeker' ? 10000 : 0;
+  // 기본 복귀 시간: 술래 승 10초 / 숨는이 승(정답 공개 후) 즉시. 명시값이 오면 그대로 사용
+  if (returnMs == null) returnMs = winner === 'seeker' ? 10000 : 0;
   room.returnToLobbyAt = Date.now() + returnMs;
   io.to(roomId).emit('gameOver', { winner, returnMs });
 }
@@ -520,6 +537,11 @@ setInterval(() => {
       continue;
     }
     if (room.phase !== 'playing') continue; // 점수/휘파람은 진행(playing) 중에만
+    // 술래가 모두 이탈해 한 명도 남지 않으면 숨는이 승(로비/대기 단계는 위에서 제외됨)
+    if (![...room.players.values()].some((p) => p.role === 'seeker' && !p.caught)) {
+      endRound(roomId, room, 'hider', 6000); // 결과를 보여줄 시간을 주고 로비로 복귀
+      continue;
+    }
     // 강제 휘파람("휘파람을 참을 수 없어"): 주기마다 살아있는 숨는이를 강제로 불게 해 위치 노출
     if (room.mode !== 'infection') {
       const interval = (room.whistleTime || 30) * 1000;
