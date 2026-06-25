@@ -2604,31 +2604,37 @@ export class GameScene extends Phaser.Scene {
         p.bubble.setDepth(p.y + 0.2);
       }
 
-      // 명찰/그림자 표시 여부(본인 시야에만 적용):
-      //  · 술래  → 남(숨는이)의 명찰/그림자는 숨김(본인 것만 표시)
+      // 명찰 표시 여부(본인 시야에만 적용):
+      //  · 술래  → 남(숨는이)의 명찰은 숨김(본인 것만 표시)
       //  · 숨는이 → H 토글(_hideTags) 시 모든 사람 숨김
-      // 술래: 본인 + 다른 술래는 보이고 숨는이는 숨김 / 숨는이: H 토글
       const tagShow = this.myRole === 'seeker'
         ? (id === this.myId || p.role === 'seeker')
         : !this._hideTags;
-      p.shadow.setVisible(tagShow);
       p.label.setVisible(tagShow);
       if (p.hostTag) p.hostTag.setVisible(tagShow);
 
+      // 그림자: 캔버스(위장)를 꺼낸 동안에만 사라짐 — 그 외엔 술래에게도 항상 보임
+      const canvasOut = id === this.myId
+        ? (this.drawState === 'holding' || this.drawState === 'drawing')
+        : p.holding;
+      p.shadow.setVisible(!canvasOut);
+
       // 유령(휘파람/기본 사망): 흑백+반투명. 죽은 사람끼리만 보임 / 정답 공개(revealed)면 모두에게 보임. 명찰·그림자 없음
+      const ghostShown = (id === this.myId) || this.caught || p.revealed; // 이 유령이 내 시야에 보이는지
       if (p.ghost) {
-        const ghostShown = (id === this.myId) || this.caught || p.revealed;
         p.body.setTint(0x5a5a5a).setAlpha(ghostShown ? 0.4 : 0);
         if (p.skin) p.skin.setAlpha(ghostShown ? 0.4 : 0);
         p.shadow.setVisible(false);
         p.label.setVisible(false);
       }
 
-      // 말풍선은 명찰과 동일한 규칙으로만 노출(술래엔 숨김 + H 토글 + 유령 숨김) + 4초 후 사라짐.
-      // 떠 있는 동안엔 명찰(과 host 태그)을 숨겨 말풍선이 그 자리를 대신한다(닉네임은 말풍선에 표기).
-      const bubbleOn = !!p.bubble && p.label.visible && Date.now() <= (p.bubbleUntil || 0);
+      // 말풍선 노출 규칙 + 4초 후 사라짐:
+      //  · 살아있는 캐릭터 → 명찰과 동일(술래엔 숨김 + H 토글). 떠 있는 동안 명찰 대신 표시
+      //  · 유령(사망)     → 유령끼리만(유령 본체가 보일 때만) 표시
+      const bubbleVisible = p.ghost ? ghostShown : p.label.visible;
+      const bubbleOn = !!p.bubble && bubbleVisible && Date.now() <= (p.bubbleUntil || 0);
       if (p.bubble) p.bubble.setVisible(bubbleOn);
-      if (bubbleOn) {
+      if (bubbleOn && !p.ghost) { // 유령은 명찰이 이미 없으니 가릴 명찰도 없음
         p.label.setVisible(false);
         if (p.hostTag) p.hostTag.setVisible(false);
       }
