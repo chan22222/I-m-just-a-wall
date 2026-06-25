@@ -676,7 +676,8 @@ body.cursor-hidden, body.cursor-hidden * { cursor: none !important; }
   word-break: break-word;
   animation: chatIn 0.15s ease;
 }
-.chat-msg .who { font-weight: 700; margin-right: 5px; color: #7cc4ff; }
+/* 닉네임은 통째로 유지(한글+숫자 닉 '초무2' 의 숫자만 줄바꿈되는 문제 방지) */
+.chat-msg .who { font-weight: 700; margin-right: 5px; color: #7cc4ff; white-space: nowrap; }
 .chat-msg.me .who { color: #ffd83b; }
 @keyframes chatIn {
   from { opacity: 0; transform: translateY(-4px); }

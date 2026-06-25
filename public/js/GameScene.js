@@ -2270,13 +2270,31 @@ export class GameScene extends Phaser.Scene {
   // 캐릭터 머리 위 말풍선. 옅은 어두운 배경 + 테두리 + 아래로 향한 꼬리.
   // Graphics(도형)+Text 를 컨테이너로 묶는다. 컨테이너 로컬 원점(0,0) = 꼬리 끝 →
   // update 루프에서 명찰 바로 위에 끝점을 맞추고, 표시 여부는 명찰과 동일 규칙을 따른다.
+  // 말풍선 자동 줄바꿈: 공백이 있으면 단어 단위로, 공백 없는 긴 한글 등은 글자 수로 강제 분할.
+  _wrapBubble(s, maxLen) {
+    const lines = [];
+    let cur = '';
+    for (let w of String(s).split(' ')) {
+      while (w.length > maxLen) {            // 한 토큰이 한 줄보다 길면 잘라서 내림
+        if (cur) { lines.push(cur); cur = ''; }
+        lines.push(w.slice(0, maxLen));
+        w = w.slice(maxLen);
+      }
+      if (!cur) cur = w;
+      else if (cur.length + 1 + w.length <= maxLen) cur += ' ' + w;
+      else { lines.push(cur); cur = w; }
+    }
+    if (cur) lines.push(cur);
+    return lines.join('\n');
+  }
+
   _showChatBubble(id, name, text) {
     const p = this.players.get(id);
     if (!p) return;
-    const msg = String(text || '').trim().slice(0, 60);
+    const msg = String(text || '').trim().slice(0, 40); // 말풍선은 최대 40자
     if (!msg) return;
-    // 말풍선엔 명찰 대신 '닉네임 : 메시지' 를 함께 표기
-    const line = `${name || p.name} : ${msg}`;
+    // 말풍선엔 명찰 대신 '닉네임 : 메시지' 를 함께 표기. 너무 길면 자동 줄바꿈.
+    const line = this._wrapBubble(`${name || p.name} : ${msg}`, 16);
     if (!p.bubble) {
       const g = this.add.graphics();
       const t = this.add.text(0, 0, '', {
